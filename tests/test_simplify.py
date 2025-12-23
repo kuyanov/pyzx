@@ -21,7 +21,7 @@ import sys
 from types import ModuleType
 from typing import Optional
 
-from pyzx import VertexType
+from pyzx import VertexType, EdgeType
 
 if __name__ == '__main__':
     sys.path.append('..')
@@ -68,6 +68,17 @@ class TestSimplify(unittest.TestCase):
         # self.circuits.append(cliffordT(4,30,0.3))
         # self.circuits.append(cliffordT(5,50,0.08))
         # self.circuits.append(cliffordT(4,80,0.1))
+    
+    @staticmethod
+    def generate_graph(n, m):
+        g = Graph()
+        for _ in range(n):
+            g.add_vertex(VertexType.Z, phase=Fraction(random.randint(0, 7), 4))
+        while g.num_edges() < m:
+            [u, v] = random.sample(range(n), k=2)
+            if (u, v) not in g.edge_set() and (v, u) not in g.edge_set():
+                g.add_edge((u, v), EdgeType.HADAMARD)
+        return g
 
     def func_test(self, func, prepare=None):
         for i,c in enumerate(self.circuits):
@@ -143,6 +154,15 @@ class TestSimplify(unittest.TestCase):
     
     def test_full_reduce(self):
         self.func_test(full_reduce)
+    
+    def test_full_reduce_random_graph(self):
+        for i in range(100):
+            with self.subTest(i=i):
+                g = self.generate_graph(8, 20)
+                val = tensorfy(g)
+                full_reduce(g)
+                val2 = tensorfy(g)
+                self.assertTrue(compare_tensors(val, val2, preserve_scalar=True))
 
     def test_supplementarity_simp(self):
         g = Graph()
