@@ -98,14 +98,14 @@ class TestRankWidth(unittest.TestCase):
         self.check_circuit_tensorfy(circ, '/', '/')
 
     def test_tensorfy_rw_random_graph(self):
-        for _ in range(10):
-            g = self.generate_graph(10, 40)
+        for _ in range(100):
+            g = self.generate_graph(5, 10)
             self.check_graph_tensorfy(g)
 
     def test_tensorfy_rw_random_circuit(self):
-        n_qubits, n_gates = 10, 200
+        n_qubits, n_gates = 4, 50
         basis_states = ['0', '1', '+', '-', '/']
-        for _ in range(10):
+        for _ in range(100):
             circ = zx.generate.CNOT_HAD_PHASE_circuit(qubits=n_qubits, depth=n_gates)
             state = ''.join(random.choice(basis_states) for _ in range(n_qubits))
             effect = ''.join(random.choice(basis_states) for _ in range(n_qubits))

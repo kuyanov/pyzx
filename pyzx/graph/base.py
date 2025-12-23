@@ -522,7 +522,7 @@ class BaseGraph(Generic[VT, ET], metaclass=DocstringMeta):
             g.set_edata_dict(new_e, self.edata_dict(e))
 
         # Rebind all variables in phases to the new graph's registry
-        g.rebind_variables_to_registry()
+        # g.rebind_variables_to_registry()
 
         return g
 
