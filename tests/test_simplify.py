@@ -30,7 +30,7 @@ from pyzx.graph import Graph
 from pyzx.circuit import Circuit
 from pyzx.circuit.qasmparser import qasm
 from fractions import Fraction
-from pyzx.generate import cliffordT
+from pyzx.generate import cliffordT, CNOT_HAD_PHASE_circuit
 from pyzx.simplify import *
 from pyzx.simplify import supplementarity_simp, to_clifford_normal_form_graph, copy_simp
 from pyzx import compare_tensors
@@ -54,6 +54,17 @@ class TestSimplify(unittest.TestCase):
         self.circuits = []
         self.circuits.append(cliffordT(3,20,0.3))
         self.circuits.append(cliffordT(3,10,0.1))
+        n_qubits, n_gates = 3, 50
+        basis_states = ['0', '1', '+', '-', '/']
+        for _ in range(100):
+            circ = CNOT_HAD_PHASE_circuit(qubits=n_qubits, depth=n_gates)
+            state = ''.join(random.choice(basis_states) for _ in range(n_qubits))
+            effect = ''.join(random.choice(basis_states) for _ in range(n_qubits))
+            g = circ.to_graph()
+            g.apply_state(state)
+            g.apply_effect(effect)
+            self.circuits.append(g)
+            
         # self.circuits.append(cliffordT(4,30,0.3))
         # self.circuits.append(cliffordT(5,50,0.08))
         # self.circuits.append(cliffordT(4,80,0.1))
@@ -129,6 +140,9 @@ class TestSimplify(unittest.TestCase):
 
     def test_clifford_simp(self):
         self.func_test(clifford_simp)
+    
+    def test_full_reduce(self):
+        self.func_test(full_reduce)
 
     def test_supplementarity_simp(self):
         g = Graph()
