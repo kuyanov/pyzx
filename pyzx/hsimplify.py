@@ -14,6 +14,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""This file is structured the same way as `simplify.py`, but instead contains the rewrites
+that deal specifically with H-boxes and ZH-diagrams."""
+
 from .simplify import pivot_simp, lcomp_simp, pivot_gadget_simp, pivot_boundary_simp, spider_simp, id_simp
 from .simplify import to_gh, copy_simp
 from .rewrite_rules import *
@@ -124,10 +127,10 @@ hbox_to_had_edge = RewriteSimpSingleVertex(check_hadamard, unsafe_replace_hadama
 zero_hbox_simp = RewriteSimpSingleVertex(check_zero_hbox, unsafe_zero_hbox)
 """Removes a given H-box with a phase of 2pi=0. Can be run automatically on the entire graph."""
 
-par_hbox_simp = RewriteSimpGraph(check_par_hbox_for_apply, par_hbox, check_par_hbox_for_simp, simp_par_hbox)
+par_hbox_simp = RewriteSimpGraph(par_hbox, simp_par_hbox)
 """Performs the `multiply rule'. Can be run automatically on the entire graph."""
 
-par_hbox_intro_simp = RewriteSimpGraph(check_par_hbox_intro_for_apply, par_hbox_intro, check_par_hbox_intro_for_simp, simp_par_hbox_intro)
+par_hbox_intro_simp = RewriteSimpGraph(par_hbox_intro, simp_par_hbox_intro)
 """Removes an H-box according to the Intro rule. Can be run automatically on the entire graph."""
 
 hspider_simp = RewriteSimpDoubleVertex(check_connected_hboxes, unsafe_fuse_hboxes)
@@ -142,7 +145,7 @@ had_edge_to_hbox_simp = RewriteSimpDoubleVertex(check_hadamard_edge, unsafe_had_
 hbox_to_had_edge_simp = RewriteSimpSingleVertex(check_hadamard, unsafe_replace_hadamard)
 """Converts an h-box connecting the given vertices into a hadamard edge. Can be run automatically on the entire graph."""
 
-just_hpivot_simp = RewriteSimpGraph(check_hpivot_for_apply, hpivot, check_hpivot_for_simp, simp_hpivot)
+just_hpivot_simp = RewriteSimpGraph(hpivot, simp_hpivot)
 """Performs hyper-pivot rewrite. This should only be called through :func:`hpivot_simp`."""
 
 def hpivot_simp(g: BaseGraph[VT,ET]) -> bool:

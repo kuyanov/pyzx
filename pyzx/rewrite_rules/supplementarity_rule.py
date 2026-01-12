@@ -20,9 +20,7 @@ This rule acts on an entire graph, so it should only be run
 using the using simplify.supplementarity_simp(g) or simplify.supplementarity_simp.apply(g).
 """
 
-__all__ = ['check_supplementarity_for_simp',
-           'check_supplementarity_for_apply',
-           'safe_apply_supplementarity',
+__all__ = ['safe_apply_supplementarity',
            'simp_supplementarity'
            ]
 
@@ -35,25 +33,16 @@ from pyzx.graph.base import BaseGraph, VT, ET
 
 MatchSupplementarityType = Tuple[VT, VT, Literal[1, 2], FrozenSet[VT]]
 
-def check_supplementarity_for_simp(g: BaseGraph[VT,ET]) -> bool:
-    """Runs :func:`match_supplementarity` and returns whether any matches were found."""
-    matches = match_supplementarity(g)
-    return len(matches) != 0
-
-def check_supplementarity_for_apply(g: BaseGraph[VT,ET], v: VT, w: VT) -> bool:
-    """Runs :func:`match_supplementarity` on the input vertices and returns whether any matches were found."""
-    matches = match_supplementarity(g, [v, w])
-    return len(matches) != 0
-
 def simp_supplementarity(g: BaseGraph[VT,ET]) -> bool:
     """Runs :func:`match_supplementarity` and if any matches are found runs :func:`unsafe_apply_supplementarity`"""
     matches = match_supplementarity(g)
     if len(matches) <= 0: return False
     return unsafe_apply_supplementarity(g, matches)
 
-def safe_apply_supplementarity(g: BaseGraph[VT,ET], v: VT, w: VT) -> bool:
+def safe_apply_supplementarity(g: BaseGraph[VT,ET], vertices: List[VT]) -> bool:
     """Runs :func:`match_supplementarity` on the input vertices and if any matches are found runs :func:`unsafe_apply_supplementarity`"""
-    matches = match_supplementarity(g, [v, w])
+    checked_vertices = list([v for v in g.vertices() if (v in vertices)])
+    matches = match_supplementarity(g, checked_vertices)
     if len(matches) <= 0: return False
     return unsafe_apply_supplementarity(g, matches)
 
@@ -92,7 +81,7 @@ def match_supplementarity(g: BaseGraph[VT,ET], vertices: Optional[List[VT]]=None
         for w in neigh:
             if phases[w] == 0 or (not isinstance(phases[w], Poly) and phases[w].denominator <= 2) or w in taken: continue
             diff = neigh.symmetric_difference(g.neighbors(w))
-            if len(diff) == 2: # Perfect overlap
+            if len(diff) == 2: # Perfect overlap, v and w are connected to each other, but otherwise have the same neighbourhood
                 if (phases[v] + phases[w]) % 2 == 0 or (phases[v] - phases[w]) % 2 == 1:
                     m.append((v,w,2,frozenset(neigh.difference({w}))))
                     taken.update({v,w})

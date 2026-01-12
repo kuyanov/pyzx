@@ -200,7 +200,7 @@ class Multigraph(BaseGraph[int,Tuple[int,int,EdgeType]]):
                             e.s = 1
                         if e.h > 0:
                             self.nedges = self.nedges - (e.h - e.h % 2)
-                            self.scalar.add_power(-2 * (e.h - (e.h % 2)))
+                            self.scalar.add_power(-(e.h - (e.h % 2)))
                             e.h = e.h % 2
                     else:
                         if e.h > 0:
@@ -208,7 +208,7 @@ class Multigraph(BaseGraph[int,Tuple[int,int,EdgeType]]):
                             e.h = 1
                         if e.s > 0:
                             self.nedges = self.nedges - (e.s - e.s % 2)
-                            self.scalar.add_power(-2 * (e.s - (e.s % 2)))
+                            self.scalar.add_power(-(e.s - (e.s % 2)))
                             e.s = e.s % 2
             if e.is_empty():
                 del self.graph[s][t]
@@ -410,13 +410,19 @@ class Multigraph(BaseGraph[int,Tuple[int,int,EdgeType]]):
         return self._phase
     def set_phase(self, vertex, phase):
         try:
-            self._phase[vertex] = Fraction(phase) % 2
+            if isinstance(phase, Fraction):
+                self._phase[vertex] = phase % 2
+            else:
+                self._phase[vertex] = phase
         except Exception:
             self._phase[vertex] = phase
     def add_to_phase(self, vertex, phase):
         old_phase = self._phase.get(vertex, Fraction(1))
         try:
-            self._phase[vertex] = (old_phase + Fraction(phase)) % 2
+            if isinstance(old_phase, Fraction) and isinstance(phase, Fraction):
+                self._phase[vertex] = (old_phase + phase) % 2
+            else:
+                self._phase[vertex] = old_phase + phase
         except Exception:
             self._phase[vertex] = old_phase + phase
     def qubit(self, vertex):

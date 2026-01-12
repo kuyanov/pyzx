@@ -15,26 +15,37 @@
 # limitations under the License.
 
 """This module contains the ZX-diagram simplification strategies of PyZX.
-Each strategy is an instance of the Rewrite class, based on the rule functions found in rewrite_rules.
+Each strategy is an instance of the class :class:`.rewrite.Rewrite`, based on the rule functions found in rewrite_rules.
 The main procedures of interest are :func:`clifford_simp` for simple reductions,
 :func:`full_reduce` for the full rewriting power of PyZX, and :func:`teleport_reduce` to
 use the power of :func:`full_reduce` while not changing the structure of the graph.
+
+The individual rewrites can also be called directly. 
+For methods that terminate, they can be called using their `simp` method, e.g.: ``spider_simp.simp(g)``.
+As a shorthand you can just call it directly: ``spider_simp(g)``.
+The rewrites can also be applied manually to specific vertices using their `apply` method, e.g.: ``spider_simp.apply(g, v, w)``.
+Whether the `apply` method takes one or two vertices depends on the rewrite.
+You can find all the matches of a rewrite on a graph using the `find_all_matches` method, e.g.: ``spider_simp.find_all_matches(g)``.
 """
 
-__all__ = ['bialg_simp','spider_simp', 'id_simp', 'phase_free_simp', 'pivot_simp', 'remove_self_loop_simp',
+__all__ = ['bialg_simp','bialg_op_simp','spider_simp', 'id_simp', 'phase_free_simp', 'pivot_simp', 'remove_self_loop_simp',
         'pivot_gadget_simp', 'pivot_boundary_simp', 'gadget_simp',
         'lcomp_simp', 'clifford_simp', 'tcount', 'to_gh', 'to_rg',
         'full_reduce', 'teleport_reduce', 'reduce_scalar', 'supplementarity_simp',
         'to_clifford_normal_form_graph', 'to_graph_like', 'is_graph_like', 'copy_simp']
 
 
-from typing import cast
+from typing import cast, Tuple, Dict, Set, Callable, TypeVar, Optional, Union
+from typing_extensions import Literal
+import itertools
 
-from .rewrite_rules.rules import *
 from .circuit import Circuit
 from .rewrite_rules import *
 from .rewrite import *
 from .tensor import compare_tensors
+
+from .utils import EdgeType, VertexType, toggle_edge, vertex_is_zx, phase_is_clifford
+from .graph.base import BaseGraph, VT, ET
 
 MatchObject = TypeVar('MatchObject')
 
@@ -58,10 +69,10 @@ class Stats(object):
 pivot_simp = RewriteSimpDoubleVertex(check_pivot, unsafe_pivot)
 """Performs a pivot rewrite. Can be run automatically on the entire graph."""
 
-pivot_gadget_simp = RewriteSimpGraph(check_pivot_gadget_for_apply, pivot_gadget_for_apply, placeholder_check_for_pivot, pivot_gadget_for_simp)
+pivot_gadget_simp = RewriteSimpGraph(pivot_gadget_for_apply, pivot_gadget_for_simp)
 """Performs pivot rewrite on an interior Pauli vertex and an interior non-Clifford vertex. Should only be run on the entire graph."""
 
-pivot_boundary_simp = RewriteSimpGraph(check_pivot_boundary_for_apply, pivot_boundary_for_apply, placeholder_check_for_pivot, pivot_boundary_for_simp)
+pivot_boundary_simp = RewriteSimpGraph(pivot_boundary_for_apply, pivot_boundary_for_simp)
 """Performs pivot rewrite on an interior Pauli vertex and a boundary non-Pauli Clifford vertex. Should only be run on the entire graph."""
 
 lcomp_simp = RewriteSimpSingleVertex(check_lcomp, unsafe_lcomp)
@@ -70,7 +81,11 @@ lcomp_simp = RewriteSimpSingleVertex(check_lcomp, unsafe_lcomp)
 bialg_simp = RewriteSimpDoubleVertex(check_bialgebra, unsafe_bialgebra, check_bialgebra_reduce)
 """Applies the bialgebra rule to a given pair of Z and X spiders. Can be run automatically on the entire graph."""
 
-fuse_simp = RewriteSimpDoubleVertex(check_fuse, unsafe_fuse,None, False, True)
+bialg_op_simp = RewriteSimpGraph(safe_apply_bialgebra_op, simp_bialgebra_op)
+"""Applies the bialgebra rule in reverse to a given pair of Z and X spiders. Can be run automatically on the entire graph."""
+bialg_op_simp.is_match = is_bialg_op_match # type: ignore
+
+fuse_simp = RewriteSimpDoubleVertex(check_fuse, unsafe_fuse, None, False, True)
 """Performs spider fusion by fusing two matching Z X or w spiders into one. Can be run automatically on the entire graph."""
 
 remove_self_loop_simp = RewriteSimpSingleVertex(check_self_loop, unsafe_remove_self_loop)
@@ -89,10 +104,10 @@ id_simp = RewriteSimpSingleVertex(check_remove_id, unsafe_remove_id, None, True)
 add_identity_rewrite = RewriteDoubleVertex(check_edge, unsafe_add_Z_identity)
 """Add a Z spider to an edge."""
 
-gadget_simp = RewriteSimpGraph(check_phase_gadgets_for_apply, merge_phase_gadgets_for_apply, check_phase_gadgets_for_simp, merge_phase_gadgets_for_simp)
+gadget_simp = RewriteSimpGraph(merge_phase_gadgets_for_apply, merge_phase_gadgets_for_simp)
 """Finds and removes phase gadgets that act on the same set of targets. Should only be run on the entire graph."""
 
-supplementarity_simp = RewriteSimpGraph(check_supplementarity_for_apply, safe_apply_supplementarity, check_supplementarity_for_simp, simp_supplementarity)
+supplementarity_simp = RewriteSimpGraph(safe_apply_supplementarity, simp_supplementarity)
 """Performs a supplementarity rewrite by removing non-Clifford spiders that act on the same set of targets. Should only be run on the entire graph."""
 
 copy_simp = RewriteSimpSingleVertex(check_copy, unsafe_copy)
@@ -107,7 +122,7 @@ hopf_simp = RewriteSimpDoubleVertex(check_hopf, unsafe_hopf)
 z_to_z_box_simp = RewriteSimpSingleVertex(check_z_to_z_box, unsafe_z_to_z_box)
 """Turns a given z-spider into a z-box. Can be run automatically on the entire graph."""
 
-gadget_phasepoly_simp = RewriteSimpGraph(check_gadgets_phasepoly_for_apply, gadgets_phasepoly_for_apply, check_gadgets_phasepoly_for_simp, gadgets_phasepoly_for_simp)
+gadget_phasepoly_simp = RewriteSimpGraph(gadgets_phasepoly_for_apply, gadgets_phasepoly_for_simp)
 """Applies a rewrite based on rule R_13 of the paper *A Finite Presentation of CNOT-Dihedral Operators*. Should only be run on the entire graph."""
 
 push_pauli_rewrite = RewriteDoubleVertex(check_pauli, unsafe_pauli_push)
@@ -127,8 +142,8 @@ def phase_free_simp(g: BaseGraph[VT,ET]) -> bool:
     return i1 or i2
 
 def basic_simp(g: BaseGraph[VT,ET]) -> bool:
-    """Keeps doing the simplifications ``id_simp`` and ``spider_simp`` until none of them can be applied anymore. If
-    starting from a circuit, the result should still have causal flow."""
+    """Keeps doing the simplifications ``id_simp`` and ``spider_simp`` until none of them can be applied anymore. 
+    If starting from a circuit, the result should still have causal flow."""
     spider_simp(g)
     to_gh(g)
     i = 0
