@@ -22,10 +22,14 @@ quantum gates for use in the Circuit class.
 import copy
 import math
 from fractions import Fraction
-from typing import Dict, List, Optional, Type, ClassVar, TypeVar, Generic, Set
+from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
-from ..utils import EdgeType, VertexType, FractionLike
-from ..graph.base import BaseGraph, VT, ET
+from ..graph.base import ET, VT, BaseGraph
+from ..symbolic import Poly, new_const, new_var
+from ..utils import EdgeType, FractionLike, VertexType, half_phase, settings
+
+if TYPE_CHECKING:
+    from . import Circuit
 
 # We need this type variable so that the subclasses of Gate return the correct type for functions like copy()
 Tvar = TypeVar('Tvar', bound='Gate')
@@ -35,20 +39,20 @@ class TargetMapper(Generic[VT]):
     This class is used to map the target parameters of a gate to rows, qubits, and vertices
     when converting them into a graph. Used by :func:`~pyzx.circuit.gates.Gate.to_graph`.
     """
-    _qubits: Dict[int, int]
-    _rows: Dict[int, int]
-    _prev_vs: Dict[int, VT]
-    _labels: Set[int]
+    _qubits: dict[int, int]
+    _rows: dict[int, int]
+    _prev_vs: dict[int, VT]
+    _labels: set[int]
     _max_row: int
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._qubits = {}
         self._rows = {}
         self._prev_vs = {}
         self._labels = set()
         self._max_row = 0
 
-    def labels(self) -> Set[int]:
+    def labels(self) -> set[int]:
         """
         Returns the mapped labels.
         """
@@ -168,7 +172,7 @@ class TargetMapper(Generic[VT]):
 
         self._labels.remove(l)
 
-class Gate(object):
+class Gate:
     """Base class for representing quantum gates."""
     name:               ClassVar[str] = "BaseGate"
     qasm_name:          ClassVar[str] = 'undefined'
@@ -179,16 +183,16 @@ class Gate(object):
     index = 0
     def __str__(self) -> str:
         attribs = []
-        if hasattr(self, "control"): attribs.append(str(self.control))
-        if hasattr(self, "target"): attribs.append(str(self.target))
+        if hasattr(self, "control"): attribs.append(str(getattr(self, "control")))
+        if hasattr(self, "target"): attribs.append(str(getattr(self, "target")))
         if self.print_phase:
             if hasattr(self, "phase"):
-                attribs.append("phase={!s}".format(self.phase))
+                attribs.append("phase={!s}".format(getattr(self, "phase")))
             elif hasattr(self, "phases"):
-                attribs.append("phases={}".format(",".join(str(p) for p in self.phases)))
+                attribs.append("phases={}".format(",".join(str(p) for p in getattr(self, "phases"))))
         return "{}{}({})".format(
                         self.name,
-                        ("*" if (hasattr(self,"adjoint") and self.adjoint) else ""),
+                        ("*" if getattr(self, "adjoint", None) else ""),
                         ",".join(attribs))
 
     def __repr__(self) -> str:
@@ -206,19 +210,19 @@ class Gate(object):
         return True
 
     def _max_target(self) -> int:
-        qubits = self.target        # type: ignore # due to ParityPhase
+        qubits = getattr(self, "target")
         if hasattr(self, "control"):
-            qubits = max([qubits, self.control])
+            qubits = max([qubits, getattr(self, "control")])
         return qubits
 
-    def __add__(self, other):
+    def __add__(self: Tvar, other: Tvar) -> 'Circuit':
         from . import Circuit
         c = Circuit(self._max_target()+1)
         c.add_gate(self)
         c += other
         return c
 
-    def __matmul__(self,other):
+    def __matmul__(self: Tvar, other: Tvar) -> 'Circuit':
         from . import Circuit
         c = Circuit(self._max_target()+1)
         c.add_gate(self)
@@ -232,23 +236,23 @@ class Gate(object):
     def to_adjoint(self: Tvar) -> Tvar:
         g = self.copy()
         if hasattr(g, "phase"):
-            g.phase = -g.phase
+            setattr(g, "phase", -getattr(g, "phase"))
         if hasattr(g, "adjoint"):
-            g.adjoint = not g.adjoint
+            setattr(g, "adjoint", not getattr(g, "adjoint"))
         return g
 
     def tcount(self) -> int:
         return 0
 
-    def reposition(self: Tvar, mask: List[int], bit_mask: Optional[List[int]] = None) -> Tvar:
+    def reposition(self: Tvar, mask: list[int], bit_mask: list[int] | None = None) -> Tvar:
         g = self.copy()
         if hasattr(g, "target"):
-            g.target = mask[g.target]
+            setattr(g, "target", mask[getattr(g, "target")])
         if hasattr(g, "control"):
-            g.control = mask[g.control]
+            setattr(g, "control", mask[getattr(g, "control")])
         return g
 
-    def to_basic_gates(self) -> List['Gate']:
+    def to_basic_gates(self) -> list['Gate']:
         return [self]
 
     def to_quipper(self) -> str:
@@ -259,10 +263,10 @@ class Gate(object):
                 raise TypeError("Gate {} doesn't have a Quipper description".format(str(self)))
             return "\n".join(g.to_quipper() for g in bg)
         s = 'QGate["{}"]{}({!s})'.format(n,
-                                         ("*" if (hasattr(self,"adjoint") and self.adjoint) else ""),
-                                         self.target) # type: ignore # due to ParityPhase
+                                         ("*" if getattr(self, "adjoint", None) else ""),
+                                         getattr(self, "target"))
         if hasattr(self, "control"):
-            s += ' with controls=[+{!s}]'.format(self.control)
+            s += ' with controls=[+{!s}]'.format(getattr(self, "control"))
         s += ' with nocontrol'
         return s
 
@@ -273,7 +277,7 @@ class Gate(object):
             if len(bg) == 1:
                 raise TypeError("Gate {} doesn't have a QASM description".format(str(self)))
             return "\n".join(g.to_qasm() for g in bg)
-        if hasattr(self, "adjoint") and self.adjoint:
+        if getattr(self, "adjoint", None):
             n = self.qasm_name_adjoint
 
         args = []
@@ -282,14 +286,18 @@ class Gate(object):
         param = ""
         if self.print_phase:
             if hasattr(self, "phase"):
-                param = "({}*pi)".format(float(self.phase))
+                try:
+                    param = "({}*pi)".format(float(getattr(self, "phase")))
+                except (TypeError, ValueError):
+                    # Symbolic (Poly) phase — emit as-is.
+                    param = "({}*pi)".format(getattr(self, "phase"))
             elif hasattr(self, "phases"):
-                param = "({})".format(",".join("{}*pi".format(float(p)) for p in self.phases))
+                param = "({})".format(",".join("{}*pi".format(float(p)) for p in getattr(self, "phases")))
         return "{}{} {};".format(n, param, ", ".join(args))
 
     def to_qc(self) -> str:
         n = self.qc_name
-        if hasattr(self, "adjoint") and self.adjoint:
+        if getattr(self, "adjoint", None):
             n += "*"
         if n == 'undefined':
             if isinstance(self, (ZPhase, XPhase)):
@@ -309,7 +317,7 @@ class Gate(object):
         #     args.insert(0, phase_to_s(self.phase))
         return "{} {}".format(n, " ".join(args))
 
-    def to_graph(self, g: BaseGraph[VT,ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         """
         Add the converted gate to the graph.
 
@@ -320,17 +328,21 @@ class Gate(object):
         raise NotImplementedError("to_graph() must be implemented by each Gate subclass.")
 
     def graph_add_node(self,
-                g: BaseGraph[VT,ET],
+                g: BaseGraph[VT, ET],
                 mapper: TargetMapper[VT],
                 t: VertexType,
                 l: int, r: int,
-                phase: FractionLike=0,
-                etype: EdgeType=EdgeType.SIMPLE,
+                phase: FractionLike = 0,
+                etype: EdgeType = EdgeType.SIMPLE,
                 ground: bool = False) -> VT:
         v = g.add_vertex(t, mapper.to_qubit(l), r, phase, ground)
         g.add_edge((mapper.prev_vertex(l), v), etype)
         mapper.set_prev_vertex(l, v)
         return v
+    
+    def to_emoji(self, strings: list[list[str]]) -> None:
+        raise NotImplementedError(f"Gate {self} cannot be converted to emoji")
+
 
 class ZPhase(Gate):
     name = 'ZPhase'
@@ -341,16 +353,16 @@ class ZPhase(Gate):
         self.target = target
         self.phase = phase
 
-    def to_graph(self, g, q_mapper, _c_mapper):
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         self.graph_add_node(g,q_mapper, VertexType.Z, self.target, q_mapper.next_row(self.target), self.phase)
         q_mapper.advance_next_row(self.target)
 
-    def to_quipper(self):
+    def to_quipper(self) -> str:
         if not self.print_phase:
             return super().to_quipper()
         return 'QRot["exp(-i%Z)",{!s}]({!s})'.format(math.pi*self.phase/2,self.target)
 
-    def to_emoji(self,strings: List[List[str]]) -> None:
+    def to_emoji(self, strings: list[list[str]]) -> None:
         s = ''
         phase = self.phase % 2
         if phase == Fraction(1,2): s = ':Zp4:'
@@ -363,10 +375,10 @@ class ZPhase(Gate):
         else: raise Exception("Unsupported phase " + str(phase))
         strings[self.target].append(s)
 
-    def tcount(self):
+    def tcount(self) -> int:
         return 1 if self.phase.denominator > 2 else 0
 
-    def split_phases(self) -> List['ZPhase']:
+    def split_phases(self) -> list['ZPhase']:
         if not self.phase: return []
         if self.phase == 1: return [Z(self.target)]
         if self.phase.denominator == 2:
@@ -374,7 +386,7 @@ class ZPhase(Gate):
                 return [S(self.target)]
             else: return [S(self.target, adjoint=True)]
         elif self.phase.denominator == 4:
-            gates: List['ZPhase'] = []
+            gates: list['ZPhase'] = []
             n = self.phase.numerator % 8
             if n == 3 or n == 5:
                 gates.append(Z(self.target))
@@ -402,7 +414,7 @@ class S(ZPhase):
     qc_name = 'S'
     quipper_name = 'S'
     print_phase = False
-    def __init__(self, target: int, adjoint:bool=False) -> None:
+    def __init__(self, target: int, adjoint: bool = False) -> None:
         super().__init__(target, Fraction(1,2)*(-1 if adjoint else 1))
         self.adjoint = adjoint
 
@@ -413,7 +425,7 @@ class T(ZPhase):
     qc_name = 'T'
     quipper_name = 'T'
     print_phase = False
-    def __init__(self, target: int, adjoint:bool=False) -> None:
+    def __init__(self, target: int, adjoint: bool = False) -> None:
         super().__init__(target, Fraction(1,4)*(-1 if adjoint else 1))
         self.adjoint = adjoint
 
@@ -422,15 +434,15 @@ class XPhase(Gate):
     qasm_name = 'rx'
     quipper_name = 'XPhase'
     print_phase = True
-    def __init__(self, target: int, phase: FractionLike=0) -> None:
+    def __init__(self, target: int, phase: FractionLike = 0) -> None:
         self.target = target
         self.phase = phase
 
-    def to_graph(self, g, q_mapper, _c_mapper):
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         self.graph_add_node(g, q_mapper, VertexType.X, self.target, q_mapper.next_row(self.target), self.phase)
         q_mapper.advance_next_row(self.target)
 
-    def to_emoji(self,strings: List[List[str]]) -> None:
+    def to_emoji(self, strings: list[list[str]]) -> None:
         s = ''
         phase = self.phase % 2
         if phase == Fraction(1,2): s = ':Xp4:'
@@ -443,18 +455,43 @@ class XPhase(Gate):
         else: raise Exception("Unsupported phase " + str(phase))
         strings[self.target].append(s)
 
-    def to_quipper(self):
+    def to_quipper(self) -> str:
         if not self.print_phase:
             return super().to_quipper()
         return 'QRot["exp(-i%X)",{!s}]({!s})'.format(math.pi*self.phase/2,self.target)
 
-    def tcount(self):
+    def to_basic_gates(self) -> list[Gate]:
+        # Handle symbolic (Poly) phases - return self unchanged.
+        if not isinstance(self.phase, (int, float, Fraction)):
+            return [self]
+
+        # Normalize phase to Fraction for consistent handling.
+        if isinstance(self.phase, float):
+            phase = Fraction(self.phase).limit_denominator(settings.float_to_fraction_max_denominator)
+        else:
+            phase = Fraction(self.phase)
+
+        # Normalize to [0, 2) range.
+        phase = phase % 2
+
+        # Identity gate - return empty list.
+        if phase == 0:
+            return []
+
+        # NOT/X gate - return as basic gate.
+        if phase == 1:
+            return [NOT(self.target)]
+
+        # General case: return normalized XPhase (keeps it as a basic gate).
+        return [XPhase(self.target, phase)]
+
+    def tcount(self) -> int:
         return 1 if self.phase.denominator > 2 else 0
 
-    def split_phases(self) -> List[Gate]:
+    def split_phases(self) -> list[Gate]:
         if not self.phase: return []
         if self.phase == 1: return [NOT(self.target)]
-        gates: List[Gate] = [HAD(self.target)]
+        gates: list[Gate] = [HAD(self.target)]
         if self.phase.denominator == 2:
             if self.phase.numerator % 4 == 1:
                 gates.append(S(self.target))
@@ -476,7 +513,7 @@ class SX(XPhase):
     qasm_name = 'sx'
     qasm_name_adjoint = 'sxdg'
     print_phase = False
-    def __init__(self, target: int, adjoint:bool=False) -> None:
+    def __init__(self, target: int, adjoint: bool = False) -> None:
         super().__init__(target, Fraction(1,2)*(-1 if adjoint else 1))
         self.adjoint = adjoint
 
@@ -487,12 +524,12 @@ class CSX(Gate):
         self.target = target
         self.control = control
 
-    def to_basic_gates(self):
+    def to_basic_gates(self) -> list[Gate]:
         return [HAD(self.target)] + \
                CPhase(self.control,self.target,Fraction(1,2)).to_basic_gates() + \
                [HAD(self.target)]
 
-    def to_graph(self, g, q_mapper, c_mapper):
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         for gate in self.to_basic_gates():
             gate.to_graph(g, q_mapper, c_mapper)
 
@@ -501,7 +538,7 @@ class YPhase(Gate):
     qasm_name = 'ry'
     quipper_name = 'YPhase'
     print_phase = True
-    def __init__(self, target: int, phase: FractionLike=0) -> None:
+    def __init__(self, target: int, phase: FractionLike = 0) -> None:
         self.target = target
         self.phase = phase
 
@@ -515,14 +552,33 @@ class YPhase(Gate):
     def __str__(self) -> str:
         return 'QRot["exp(-i%Y)",{!s}]({!s})'.format(math.pi*self.phase/2,self.target)
 
-    def to_basic_gates(self):
-        return [ZPhase(self.target, Fraction(1,2)), XPhase(self.target, -self.phase), ZPhase(self.target, -Fraction(1,2))]
+    def to_basic_gates(self) -> list[Gate]:
+        # Handle symbolic (Poly) phases - use original decomposition.
+        if not isinstance(self.phase, (int, float, Fraction)):
+            return [ZPhase(self.target, Fraction(1,2)), XPhase(self.target, -self.phase), ZPhase(self.target, -Fraction(1,2))]
 
-    def to_graph(self, g, q_mapper, c_mapper):
+        # Normalize phase for the XPhase component.
+        if isinstance(self.phase, float):
+            x_phase = Fraction(-self.phase).limit_denominator(settings.float_to_fraction_max_denominator)
+        else:
+            x_phase = Fraction(-self.phase)
+        x_phase = x_phase % 2
+
+        gates: list[Gate] = [ZPhase(self.target, Fraction(1,2))]
+        if x_phase == 0:
+            pass  # Identity - skip the XPhase gate.
+        elif x_phase == 1:
+            gates.append(NOT(self.target))
+        else:
+            gates.append(XPhase(self.target, x_phase))
+        gates.append(ZPhase(self.target, -Fraction(1,2)))
+        return gates
+
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         for gate in self.to_basic_gates():
             gate.to_graph(g, q_mapper, c_mapper)
 
-    def tcount(self):
+    def tcount(self) -> int:
         return 1 if self.phase.denominator > 2 else 0
 
 class Y(YPhase):
@@ -541,12 +597,12 @@ class CY(Gate):
         self.target = target
         self.control = control
 
-    def to_basic_gates(self):
+    def to_basic_gates(self) -> list[Gate]:
         return [S(self.target,adjoint=True),
                 CNOT(self.control,self.target),
                 S(self.target)]
 
-    def to_graph(self, g, q_mapper, c_mapper):
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         for gate in self.to_basic_gates():
             gate.to_graph(g, q_mapper, c_mapper)
 
@@ -559,6 +615,9 @@ class NOT(XPhase):
     def __init__(self, target: int) -> None:
         super().__init__(target, phase = Fraction(1,1))
 
+    def to_basic_gates(self) -> list[Gate]:
+        return [self]
+
 class HAD(Gate):
     name = 'HAD'
     qasm_name = 'h'
@@ -567,13 +626,13 @@ class HAD(Gate):
     def __init__(self, target: int) -> None:
         self.target = target
 
-    def to_graph(self, g, q_mapper, _c_mapper):
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         v = g.add_vertex(VertexType.Z, q_mapper.to_qubit(self.target), q_mapper.next_row(self.target))
         g.add_edge((q_mapper.prev_vertex(self.target),v), EdgeType.HADAMARD)
         q_mapper.set_prev_vertex(self.target, v)
         q_mapper.advance_next_row(self.target)
 
-    def to_emoji(self,strings: List[List[str]]) -> None:
+    def to_emoji(self, strings: list[list[str]]) -> None:
         strings[self.target].append(':H_:')
 
 class CNOT(Gate):
@@ -584,7 +643,7 @@ class CNOT(Gate):
     def __init__(self, control: int, target: int) -> None:
         self.target = target
         self.control = control
-    def to_graph(self, g, q_mapper, _c_mapper):
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         [top, bot] = sorted([self.target, self.control])
         r = max(q_mapper.next_row(r_) for r_ in range(top, bot + 1))
         t = self.graph_add_node(g, q_mapper, VertexType.X, self.target, r)
@@ -594,7 +653,7 @@ class CNOT(Gate):
           q_mapper.set_next_row(r_, r+1)
         g.scalar.add_power(1)
 
-    def to_emoji(self,strings: List[List[str]]) -> None:
+    def to_emoji(self, strings: list[list[str]]) -> None:
         c,t = self.control, self.target
         mi = min([c,t])
         ma = max([c,t])
@@ -627,7 +686,7 @@ class CZ(Gate):
             return True
         return False
 
-    def to_graph(self, g, q_mapper, _c_mapper):
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         r = max(q_mapper.next_row(self.target), q_mapper.next_row(self.control))
         t = self.graph_add_node(g, q_mapper, VertexType.Z, self.target, r)
         c = self.graph_add_node(g, q_mapper, VertexType.Z, self.control, r)
@@ -636,7 +695,7 @@ class CZ(Gate):
         q_mapper.set_next_row(self.control, r+1)
         g.scalar.add_power(1)
 
-    def to_emoji(self,strings: List[List[str]]) -> None:
+    def to_emoji(self, strings: list[list[str]]) -> None:
         c,t = self.control, self.target
         strings[t].append(':H_:')
         CNOT(c,t).to_emoji(strings)
@@ -649,7 +708,7 @@ class XCX(CZ):
     qasm_name = 'undefined'
     qc_name = 'undefined'
     quipper_name = 'X'
-    def to_graph(self, g, q_mapper, _c_mapper):
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         r = max(q_mapper.next_row(self.target), q_mapper.next_row(self.control))
         t = self.graph_add_node(g, q_mapper, VertexType.X, self.target, r)
         c = self.graph_add_node(g, q_mapper, VertexType.X, self.control, r)
@@ -658,7 +717,7 @@ class XCX(CZ):
         q_mapper.set_next_row(self.control, r+1)
         g.scalar.add_power(1)
 
-    def to_basic_gates(self):
+    def to_basic_gates(self) -> list[Gate]:
         return [HAD(self.control), CNOT(self.control,self.target), HAD(self.control)]
 
 class SWAP(CZ):
@@ -666,12 +725,12 @@ class SWAP(CZ):
     qasm_name = 'swap'
     qc_name = 'undefined'
     quipper_name = 'undefined'
-    def to_basic_gates(self):
+    def to_basic_gates(self) -> list[Gate]:
         c1 = CNOT(self.control, self.target)
         c2 = CNOT(self.target, self.control)
         return [c1,c2,c1]
 
-    def to_graph(self, g, q_mapper, c_mapper):
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         for gate in self.to_basic_gates():
             gate.to_graph(g, q_mapper, c_mapper)
 
@@ -684,14 +743,15 @@ class CRX(Gate):
         self.control = control
         self.phase = phase
 
-    def to_basic_gates(self):
-        return [ZPhase(self.target,Fraction(1,2)),
-                CNOT(self.control,self.target)] + \
-               U3(self.target,-self.phase/2,0,0).to_basic_gates() + \
-               [CNOT(self.control,self.target)] + \
-               U3(self.target,self.phase/2,Fraction(-1,2),0).to_basic_gates()
+    def to_basic_gates(self) -> list[Gate]:
+        phase = half_phase(self.phase)
+        return [ZPhase(self.target, Fraction(1,2)),
+                CNOT(self.control, self.target)] + \
+               U3(self.target, -phase, 0, 0).to_basic_gates() + \
+               [CNOT(self.control, self.target)] + \
+               U3(self.target, phase, Fraction(-1,2), 0).to_basic_gates()
 
-    def to_graph(self, g, q_mapper, c_mapper):
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         for gate in self.to_basic_gates():
             gate.to_graph(g, q_mapper, c_mapper)
 
@@ -704,13 +764,14 @@ class CRY(Gate):
         self.control = control
         self.phase = phase
 
-    def to_basic_gates(self):
-        return YPhase(self.target,self.phase/2).to_basic_gates() + \
-               [CNOT(self.control,self.target)] + \
-               YPhase(self.target,-self.phase/2).to_basic_gates() + \
-               [CNOT(self.control,self.target)]
+    def to_basic_gates(self) -> list[Gate]:
+        half_phase = self.phase // 2 if isinstance(self.phase, int) else self.phase / 2
+        return YPhase(self.target, half_phase).to_basic_gates() + \
+               [CNOT(self.control, self.target)] + \
+               YPhase(self.target, -half_phase).to_basic_gates() + \
+               [CNOT(self.control, self.target)]
 
-    def to_graph(self, g, q_mapper, c_mapper):
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         for gate in self.to_basic_gates():
             gate.to_graph(g, q_mapper, c_mapper)
 
@@ -723,20 +784,14 @@ class CRZ(Gate):
         self.control = control
         self.phase = phase
 
-    def to_basic_gates(self):
-        phase1 = self.phase / 2
-        phase2 = -self.phase / 2
-        try:
-            phase1 = Fraction(phase1) % 2
-            phase2 = Fraction(phase2) % 2
-        except Exception:
-            pass
-        return [ZPhase(self.target, phase1),
+    def to_basic_gates(self) -> list[Gate]:
+        phase = half_phase(self.phase)
+        return [ZPhase(self.target, phase),
                 CNOT(self.control, self.target),
-                ZPhase(self.target, phase2),
+                ZPhase(self.target, -phase),
                 CNOT(self.control, self.target)]
 
-    def to_graph(self, g, q_mapper, c_mapper):
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         for gate in self.to_basic_gates():
             gate.to_graph(g, q_mapper, c_mapper)
 
@@ -749,7 +804,7 @@ class RXX(Gate):
         self.control = control
         self.phase = phase
 
-    def to_basic_gates(self):
+    def to_basic_gates(self) -> list[Gate]:
         return U3(self.control,Fraction(1,2),self.phase,0).to_basic_gates() + \
                [HAD(self.target),
                 CNOT(self.control,self.target),
@@ -758,7 +813,7 @@ class RXX(Gate):
                 HAD(self.target)] + \
                U2(self.control,Fraction(-1,1),(Fraction(1,1)-self.phase)%2).to_basic_gates()
 
-    def to_graph(self, g, q_mapper, c_mapper):
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         for gate in self.to_basic_gates():
             gate.to_graph(g, q_mapper, c_mapper)
 
@@ -766,19 +821,13 @@ class CPhase(CRZ):
     name = 'CPhase'
     qasm_name = 'cp'
 
-    def to_basic_gates(self):
-        phase1 = self.phase / 2
-        phase2 = -self.phase / 2
-        try:
-            phase1 = Fraction(phase1) % 2
-            phase2 = Fraction(phase2) % 2
-        except Exception:
-            pass
-        return [ZPhase(self.control, phase1),
+    def to_basic_gates(self) -> list[Gate]:
+        phase = half_phase(self.phase)
+        return [ZPhase(self.control, phase),
                 CNOT(self.control, self.target),
-                ZPhase(self.target, phase2),
+                ZPhase(self.target, -phase),
                 CNOT(self.control, self.target),
-                ZPhase(self.target, phase1)]
+                ZPhase(self.target, phase)]
 
 class CHAD(Gate):
     name = 'CHAD'
@@ -789,7 +838,7 @@ class CHAD(Gate):
         self.target = target
         self.control = control
 
-    def to_basic_gates(self):
+    def to_basic_gates(self) -> list[Gate]:
         return [HAD(self.target),S(self.target,adjoint=True),
                 CNOT(self.control,self.target),
                 HAD(self.target),T(self.target),
@@ -797,16 +846,17 @@ class CHAD(Gate):
                 T(self.target),HAD(self.target),S(self.target),NOT(self.target),S(self.control)]
 
 
-    def to_graph(self, g, q_mapper, c_mapper):
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         for gate in self.to_basic_gates():
             gate.to_graph(g, q_mapper, c_mapper)
 
 class ParityPhase(Gate):
     name = 'ParityPhase'
     print_phase = True
-    def __init__(self, phase: FractionLike, *targets: int):
+    def __init__(self, phase: FractionLike, *targets: int, as_gadget: bool = False):
         self.targets = targets
         self.phase = phase
+        self.as_gadget = as_gadget
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ParityPhase): return False
@@ -816,27 +866,55 @@ class ParityPhase(Gate):
         return False
 
     def __str__(self) -> str:
+        if self.as_gadget:
+            return "ParityPhase({!s}, {!s}, as_gadget=True)".format(
+                self.phase, ", ".join(str(t) for t in self.targets))
         return "ParityPhase({!s}, {!s})".format(self.phase, ", ".join(str(t) for t in self.targets))
 
     def _max_target(self) -> int:
         return max(self.targets)
 
-    def reposition(self, mask, bit_mask = None):
+    def copy(self) -> 'ParityPhase':
+        return type(self)(self.phase, *self.targets, as_gadget=self.as_gadget)
+
+    def reposition(self, mask: list[int], bit_mask: list[int] | None = None) -> 'ParityPhase':
         g = self.copy()
-        g.targets = [mask[t] for t in g.targets]
+        g.targets = tuple(mask[t] for t in g.targets)
         return g
 
-    def to_basic_gates(self):
-        cnots = [CNOT(self.targets[i],self.targets[i+1]) for i in range(len(self.targets)-1)]
+    def to_basic_gates(self) -> list[Gate]:
+        if self.as_gadget:
+            # Keep as-is so to_graph() can create the phase gadget structure.
+            return [self]
+        cnots: list[Gate] = [CNOT(self.targets[i],self.targets[i+1]) for i in range(len(self.targets)-1)]
         p = ZPhase(self.targets[-1], self.phase)
         return cnots + [p] + list(reversed(cnots))
+    
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
+        if self.as_gadget:
+            # Create phase gadget structure directly in the graph.
+            anchors = []
+            for t in self.targets:
+                v = self.graph_add_node(g, q_mapper, VertexType.Z, t, q_mapper.next_row(t))
+                anchors.append(v)
+                q_mapper.advance_next_row(t)
+            g.add_phase_gadget(self.phase, anchors)
+        else:
+            # Decompose to CNOTs + ZPhase.
+            for gate in self.to_basic_gates():
+                gate.to_graph(g, q_mapper, c_mapper)
 
-    def to_graph(self, g, q_mapper, c_mapper):
-        for gate in self.to_basic_gates():
-            gate.to_graph(g, q_mapper, c_mapper)
-
-    def tcount(self):
+    def tcount(self) -> int:
         return 1 if self.phase.denominator > 2 else 0
+
+
+class PhaseGadget(ParityPhase):
+    """A ParityPhase gate that will be represented as a phase gadget in ZX-diagrams.
+
+    This is equivalent to ParityPhase(phase, *targets, as_gadget=True).
+    """
+    def __init__(self, phase: FractionLike, *targets: int) -> None:
+        super().__init__(phase, *targets, as_gadget=True)
 
 
 class RZZ(ParityPhase):
@@ -847,13 +925,14 @@ class RZZ(ParityPhase):
         self.target = target
         self.targets = (control, target)
         self.phase = phase
+        self.as_gadget = False
 
 
 class FSim(Gate):
     name = 'FSim'
     qsim_name = 'fs'
     print_phase = True
-    def __init__(self, control:int, target:int, theta:FractionLike, phi:FractionLike):
+    def __init__(self, control: int, target: int, theta: FractionLike, phi: FractionLike) -> None:
         # TODO: this version assumes theta is always (pi/2)
         assert theta == Fraction(1, 2)
         self.control = control
@@ -873,18 +952,19 @@ class FSim(Gate):
     def __str__(self) -> str:
         return "FSim({!s}, {!s}, {!s}, {!s})".format(self.control, self.target, self.theta, self.phi)
 
-    def reposition(self, mask, bit_mask = None):
+    def reposition(self, mask: list[int], bit_mask: list[int] | None = None) -> 'FSim':
         g = self.copy()
-        g.targets = [mask[t] for t in g.targets]
+        g.control = mask[self.control]
+        g.target = mask[self.target]
         return g
 
-    def to_basic_gates(self):
+    def to_basic_gates(self) -> list[Gate]:
         # TODO
         #cnots = [CNOT(self.targets[i],self.targets[i+1]) for i in range(len(self.targets)-1)]
         #p = ZPhase(self.targets[-1], self.phase)
         return [self]
 
-    def to_graph(self, g, q_mapper, _c_mapper):
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         # TODO: this version assumes theta is always (pi/2)
         r = max(q_mapper.next_row(self.target), q_mapper.next_row(self.control))
         qmin = min(self.target,self.control)
@@ -961,7 +1041,7 @@ class FSim(Gate):
         #for gate in self.to_basic_gates():
         #    gate.to_graph(g, q_mapper, c_mapper)
 
-    def tcount(self):
+    def tcount(self) -> int:
         # TODO
         return 0 #1 if self.phase.denominator > 2 else 0
 
@@ -983,27 +1063,27 @@ class CCZ(Gate):
             return True
         return False
 
-    def _max_target(self):
-        return max([self.target,self.ctrl1,self.ctrl2])
+    def _max_target(self) -> int:
+        return max([self.target, self.ctrl1, self.ctrl2])
 
-    def tcount(self):
+    def tcount(self) -> int:
         return 7
 
-    def reposition(self, mask, bit_mask = None):
+    def reposition(self, mask: list[int], bit_mask: list[int] | None = None) -> 'CCZ':
         g = self.copy()
         g.target = mask[g.target]
         g.ctrl1 = mask[g.ctrl1]
         g.ctrl2 = mask[g.ctrl2]
         return g
 
-    def to_basic_gates(self):
+    def to_basic_gates(self) -> list[Gate]:
         c1,c2,t = self.ctrl1, self.ctrl2, self.target
         return [CNOT(c2,t), T(t,adjoint=True),
                 CNOT(c1,t), T(t),CNOT(c2,t),T(t,adjoint=True),
                 CNOT(c1,t), T(c2), T(t), CNOT(c1,c2),T(c1),
                 T(c2,adjoint=True),CNOT(c1,c2)]
 
-    def to_graph(self, g, q_mapper, _c_mapper):
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         # if basic_gates:
         #     for gate in self.to_basic_gates():
         #         gate.to_graph(g, q_mapper, c_mapper)
@@ -1021,7 +1101,7 @@ class CCZ(Gate):
         q_mapper.set_next_row(self.ctrl1, r+1)
         q_mapper.set_next_row(self.ctrl2, r+1)
 
-    def to_quipper(self):
+    def to_quipper(self) -> str:
         s = 'QGate["{}"]({!s})'.format(self.quipper_name,self.target)
         s += ' with controls=[+{!s},+{!s}]'.format(self.ctrl1,self.ctrl2)
         s += ' with nocontrol'
@@ -1041,14 +1121,14 @@ class Tofolli(CCZ):
             return True
         return False
 
-    def to_basic_gates(self):
+    def to_basic_gates(self) -> list[Gate]:
         c1,c2,t = self.ctrl1, self.ctrl2, self.target
         return [HAD(t), CNOT(c2,t), T(t,adjoint=True),
                 CNOT(c1,t), T(t),CNOT(c2,t),T(t,adjoint=True),
                 CNOT(c1,t), T(c2), T(t), CNOT(c1,c2),T(c1),
                 T(c2,adjoint=True),CNOT(c1,c2), HAD(t)]
 
-    def to_graph(self, g, q_mapper, c_mapper):
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         t = self.target
         HAD(t).to_graph(g, q_mapper, c_mapper)
         CCZ.to_graph(self, g, q_mapper, c_mapper)
@@ -1066,13 +1146,13 @@ class CSWAP(CCZ):
             return True
         return False
 
-    def to_basic_gates(self):
+    def to_basic_gates(self) -> list[Gate]:
         c, t1, t2 = self.ctrl1, self.ctrl2, self.target
         return [CNOT(control=t2,target=t1)] + \
                Tofolli(c,t1,t2).to_basic_gates() + \
                [CNOT(control=t2,target=t1)]
 
-    def to_graph(self, g, q_mapper, c_mapper):
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         for gate in self.to_basic_gates():
             gate.to_graph(g, q_mapper, c_mapper)
 
@@ -1086,12 +1166,12 @@ class U2(Gate):  # See https://arxiv.org/pdf/1707.03429.pdf
         self.phi = phi
         self.phases = [theta, phi]
 
-    def to_basic_gates(self):
+    def to_basic_gates(self) -> list[Gate]:
         return [ZPhase(self.target,phase=(self.phi-Fraction(1,2))%2),
                 XPhase(self.target,phase=Fraction(1,2)),
                 ZPhase(self.target,phase=(self.theta+Fraction(1,2))%2)]
 
-    def to_graph(self, g, q_mapper, c_mapper):
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         for gate in self.to_basic_gates():
             gate.to_graph(g, q_mapper, c_mapper)
 
@@ -1106,14 +1186,14 @@ class U3(Gate):  # See equation (5) of https://arxiv.org/pdf/1707.03429.pdf
         self.rho = rho
         self.phases = [theta, phi, rho]
 
-    def to_basic_gates(self):
+    def to_basic_gates(self) -> list[Gate]:
         return [ZPhase(self.target,phase=self.rho),
                 XPhase(self.target,phase=Fraction(1,2)),
                 ZPhase(self.target,phase=(self.theta+1)%2),
                 XPhase(self.target,phase=Fraction(1,2)),
                 ZPhase(self.target,phase=(self.phi+3)%2)]
 
-    def to_graph(self, g, q_mapper, c_mapper):
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         for gate in self.to_basic_gates():
             gate.to_graph(g, q_mapper, c_mapper)
 
@@ -1130,15 +1210,15 @@ class CU3(Gate):
         self.rho = rho
         self.phases = [theta, phi, rho]
 
-    def to_basic_gates(self):
-        return [ZPhase(self.control,phase=(self.rho+self.phi)/2),
-                ZPhase(self.target, phase=(self.rho-self.phi)/2),
-                CNOT(self.control,self.target)] + \
-               U3(self.target,-self.theta/2,0,-(self.phi+self.rho)/2).to_basic_gates() + \
+    def to_basic_gates(self) -> list[Gate]:
+        return [ZPhase(self.control, phase=half_phase(self.rho + self.phi)),
+                ZPhase(self.target, phase=half_phase(self.rho - self.phi)),
+                CNOT(self.control, self.target)] + \
+               U3(self.target, -half_phase(self.theta), 0, -half_phase(self.phi + self.rho)).to_basic_gates() + \
                [CNOT(self.control, self.target)] + \
-               U3(self.target,self.theta/2,self.phi,0).to_basic_gates()
+               U3(self.target, half_phase(self.theta), self.phi, 0).to_basic_gates()
 
-    def to_graph(self, g, q_mapper, c_mapper):
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         for gate in self.to_basic_gates():
             gate.to_graph(g, q_mapper, c_mapper)
 
@@ -1158,40 +1238,269 @@ class CU(Gate):
         self.gamma = gamma
         self.phases = [theta, phi, rho, gamma]
 
-    def to_basic_gates(self):
+    def to_basic_gates(self) -> list[Gate]:
         return [ZPhase(self.control,phase=self.gamma)] + \
                CU3(self.control,self.target,self.theta,self.phi,self.rho).to_basic_gates()
 
-    def to_graph(self, g, q_mapper, c_mapper):
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         for gate in self.to_basic_gates():
             gate.to_graph(g, q_mapper, c_mapper)
 
+_state_map = {
+    '+': (VertexType.Z, Fraction(0)),
+    '-': (VertexType.Z, Fraction(1)),
+    '0': (VertexType.X, Fraction(0)),
+    '1': (VertexType.X, Fraction(1)),
+}
+
+
 class InitAncilla(Gate):
+    """Initialize an ancilla qubit in a specified state.
+
+    Args:
+        label: The qubit label/index.
+        state: The initial state. One of '+', '-', '0', '1' for the
+            respective kets |+⟩, |-⟩, |0⟩, |1⟩. Defaults to '+'.
+    """
     name = 'InitAncilla'
-    def __init__(self, label):
+    STATE_MAP = _state_map
+
+    def __init__(self, label: int, state: str = '+'):
         self.label = label
         self.target = label
+        if state not in self.STATE_MAP:
+            raise ValueError(
+                f"Invalid state '{state}'. Must be one of: "
+                f"{', '.join(repr(k) for k in self.STATE_MAP.keys())}"
+            )
+        self.state = state
+
+    def __str__(self) -> str:
+        if self.state == '+':
+            return f"InitAncilla({self.label})"
+        return f"InitAncilla({self.label}, state={self.state!r})"
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, InitAncilla):
+            return False
+        return self.label == other.label and self.state == other.state
+
+    def get_vertex_info(self) -> tuple[VertexType, Fraction]:
+        """Returns (VertexType, phase) for this ancilla state."""
+        return self.STATE_MAP[self.state]
+
+    def reposition(self, mask: list[int], bit_mask: list[int] | None = None) -> 'InitAncilla':
+        g = self.copy()
+        g.label = mask[self.label]
+        g.target = g.label
+        return g
+
+
+class Reset(Gate):
+    """Reset an existing qubit to |0⟩.
+
+    Corresponds to the OpenQASM ``reset`` instruction, which discards
+    the current qubit state and unconditionally prepares ``|0⟩``.
+
+    In the ZX-diagram this is represented as a Z(0) spider on the
+    qubit wire with an X(``_rN``) leaf hanging off it, followed by a
+    disconnected X(0) leaf for the fresh ``|0⟩`` preparation. The
+    boolean variable ``_rN`` appears nowhere else, so marginalising
+    over it gives the partial-trace semantics of the discard. The
+    two leaves are tagged in vertex data with ``outcome_type``
+    set to ``'reset_discard'`` and ``'reset_state'`` respectively,
+    so the gate can be recognised on round-trip.
+    """
+    name = 'Reset'
+
+    def __init__(self, target: int) -> None:
+        self.target = target
+        self.label = target
+
+    def __str__(self) -> str:
+        return "Reset({})".format(self.target)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Reset):
+            return False
+        return self.target == other.target
+
+    def to_qasm(self) -> str:
+        return "reset q[{:d}];".format(self.target)
+
+    def reposition(self, mask: list[int], bit_mask: list[int] | None = None) -> 'Reset':
+        g = self.copy()
+        g.target = mask[self.target]
+        g.label = g.target
+        return g
+
 
 class PostSelect(Gate):
+    """Post-select a qubit in a specified state.
+
+    Args:
+        label: The qubit label/index.
+        state: The post-selection state. One of '+', '-', '0', '1' for the
+            respective bras ⟨+|, ⟨-|, ⟨0|, ⟨1|. Defaults to '+'.
+    """
     name = 'PostSelect'
-    def __init__(self, label):
+    STATE_MAP = _state_map
+
+    def __init__(self, label: int, state: str = '+') -> None:
         self.label = label
         self.target = label
+        if state not in self.STATE_MAP:
+            raise ValueError(
+                f"Invalid state '{state}'. Must be one of: "
+                f"{', '.join(repr(k) for k in self.STATE_MAP.keys())}"
+            )
+        self.state = state
 
-    def to_graph(self, g, labels, qs, _cs, rs, _crs):
-        v = g.add_vertex(VertexType.Z, self.label, 0)
+    def __str__(self) -> str:
+        if self.state == '+':
+            return f"PostSelect({self.label})"
+        return f"PostSelect({self.label}, state={self.state!r})"
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, PostSelect):
+            return False
+        return self.label == other.label and self.state == other.state
+
+    def get_vertex_info(self) -> tuple[VertexType, Fraction]:
+        """Returns (VertexType, phase) for this post-selection state."""
+        return self.STATE_MAP[self.state]
+
+    def reposition(self, mask: list[int], bit_mask: list[int] | None = None) -> 'PostSelect':
+        g = self.copy()
+        g.label = mask[self.label]
+        g.target = g.label
+        return g
+
+
+class ConditionalGate(Gate):
+    """A gate that is applied only when a classical register equals a given value.
+
+    Corresponds to the OpenQASM 2 ``if (creg == val) gate args;`` syntax.
+    In the ZX-diagram, single-qubit Z/X-rotation inner gates are represented
+    by multiplying the gate's phase by a boolean condition polynomial built
+    from the register bits.
+
+    Limitations:
+
+    * Only single-qubit Z and X rotations (ZPhase, Z, S, T, XPhase, NOT,
+      and their subclasses) are supported as inner gates. Other gates,
+      including HAD (which is single-qubit but not a Z/X rotation),
+      CNOT, and CZ, raise ``NotImplementedError`` in ``to_graph()``.
+      Conditional HAD is a known gap for QEC Pauli-frame-correction use
+      cases and requires a decomposition into Z/X rotations or a
+      dedicated graph representation.
+    """
+    name = 'ConditionalGate'
+
+    def __init__(self, condition_register: str, condition_value: int,
+                 inner_gate: 'Gate', register_size: int) -> None:
+        if condition_value < 0 or condition_value >= (1 << register_size):
+            raise ValueError(
+                "Condition value {} is out of range for a {}-bit register "
+                "(must be 0..{})".format(
+                    condition_value, register_size, (1 << register_size) - 1))
+        
+        target = getattr(inner_gate, "target", None)
+        if not isinstance(target, int):
+            raise ValueError(
+                f"Expected a single-qubit Z or X rotation, got {inner_gate}."
+            )
+        
+        self.condition_register = condition_register
+        self.condition_value = condition_value
+        self.inner_gate = inner_gate
+        self.register_size = register_size
+        self.target = target
+
+    def __str__(self) -> str:
+        return "if({}=={}) {}".format(
+            self.condition_register, self.condition_value, self.inner_gate)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, ConditionalGate):
+            return False
+        return (self.condition_register == other.condition_register
+                and self.condition_value == other.condition_value
+                and self.inner_gate == other.inner_gate
+                and self.register_size == other.register_size)
+
+    def _max_target(self) -> int:
+        return self.inner_gate._max_target()
+
+    def copy(self) -> 'ConditionalGate':
+        return ConditionalGate(
+            self.condition_register, self.condition_value,
+            self.inner_gate.copy(), self.register_size)
+
+    def reposition(self, mask: list[int], bit_mask: list[int] | None = None) -> 'ConditionalGate':
+        g = self.copy()
+        g.inner_gate = g.inner_gate.reposition(mask, bit_mask)
+        g.target = getattr(g.inner_gate, "target")
+        return g
+
+    def to_qasm(self) -> str:
+        inner_qasm = self.inner_gate.to_qasm()
+        return "if({}=={}) {}".format(
+            self.condition_register, self.condition_value, inner_qasm)
+
+    def _build_condition_poly(self, g: BaseGraph[VT, ET]) -> Poly:
+        """Build a boolean polynomial representing the register condition.
+
+        For ``if (reg == val)`` with an *n*-bit register, the condition is
+        the product over all bits *i* of either ``bit_var_i`` (when bit *i*
+        of *val* is 1) or ``(1 - bit_var_i)`` (when bit *i* is 0).
+        """
+        result: Poly = new_const(1)
+        for i in range(self.register_size):
+            bit_var = new_var(
+                "{}[{}]".format(self.condition_register, i),
+                is_bool=True, registry=g.var_registry)
+            if (self.condition_value >> i) & 1:
+                result = result * bit_var
+            else:
+                result = result * (new_const(1) - bit_var)
+        return result
+
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT],
+                 c_mapper: TargetMapper[VT]) -> None:
+        inner = self.inner_gate
+        # Single-qubit Z or X rotations: multiply phase by condition polynomial.
+        if isinstance(inner, ZPhase):
+            cond = self._build_condition_poly(g)
+            phase = cond * inner.phase
+            self.graph_add_node(g, q_mapper, VertexType.Z, inner.target,
+                                q_mapper.next_row(inner.target), phase)
+            q_mapper.advance_next_row(inner.target)
+        elif isinstance(inner, XPhase):
+            cond = self._build_condition_poly(g)
+            phase = cond * inner.phase
+            self.graph_add_node(g, q_mapper, VertexType.X, inner.target,
+                                q_mapper.next_row(inner.target), phase)
+            q_mapper.advance_next_row(inner.target)
+        else:
+            raise NotImplementedError(
+                "ConditionalGate.to_graph() is not supported for gate type "
+                "'{}'. Only single-qubit Z and X rotations (ZPhase, Z, S, T, "
+                "XPhase, NOT, and their subclasses) are currently "
+                "supported.".format(type(inner).__name__))
+
 
 class DiscardBit(Gate):
     name = 'DiscardBit'
-    def __init__(self, target):
+    def __init__(self, target: int):
         self.target = target
 
-    def reposition(self, _mask, bit_mask = None):
+    def reposition(self, mask: list[int], bit_mask: list[int] | None = None) -> 'DiscardBit':
         g = self.copy()
-        g.target = bit_mask[g.target]
+        g.target = bit_mask[g.target] if bit_mask else g.target
         return g
 
-    def to_graph(self, g, _q_mapper, c_mapper):
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
         r = c_mapper.next_row(self.target)
         self.graph_add_node(g,
             c_mapper,
@@ -1205,7 +1514,7 @@ class DiscardBit(Gate):
 
 class Measurement(Gate):
     target: int
-    result_bit: Optional[int]
+    result_bit: int | None
 
     name = 'Measurement'
     quipper_name = 'measure'
@@ -1214,49 +1523,80 @@ class Measurement(Gate):
     # * (OpenQASM 2) measure q[0] -> c[0]
     # * (OpenQASM 3) c[0] = measure q[0]
 
-    def __init__(self, target: int, result_bit: Optional[int] = None) -> None:
+    def __init__(
+        self,
+        target: int,
+        result_bit: int | None = None,
+        result_symbol: str | None = None
+    ) -> None:
         self.target = target
         self.result_bit = result_bit
+        self.result_symbol = result_symbol
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Measurement): return False
         if self.target != other.target: return False
         if self.result_bit != other.result_bit: return False
+        if self.result_symbol != other.result_symbol: return False
         return True
 
-    def reposition(self, mask, bit_mask = None):
+    def to_qasm(self) -> str:
+        if self.result_symbol is not None:
+            if '[' not in self.result_symbol:
+                raise TypeError(
+                    "Measurement result_symbol '{}' is not a valid QASM "
+                    "classical bit reference (expected 'reg[index]')".format(
+                        self.result_symbol))
+            return "measure q[{:d}] -> {};".format(self.target, self.result_symbol)
+        if self.result_bit is not None:
+            return "measure q[{:d}] -> c[{:d}];".format(self.target, self.result_bit)
+        raise TypeError("Measurement on qubit {} has no result destination".format(
+            self.target))
+
+    def reposition(self, mask: list[int], bit_mask: list[int] | None = None) -> 'Measurement':
         g = self.copy()
         g.target = mask[self.target]
         if self.result_bit is not None and bit_mask is not None:
             g.result_bit = bit_mask[self.result_bit]
         return g
 
-    def to_graph(self, g, q_mapper, c_mapper):
-        # Discard previous bit value
-        if self.result_bit is not None:
-            DiscardBit(self.result_bit).to_graph(g, q_mapper, c_mapper)
-        # Qubit measurement
+    def to_graph_symbolic_boolean(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT]) -> None:
+        """Represent the measurement as a Z spider with a symbolic-phase leaf.
+
+        Places a Z(0) spider on the qubit wire and attaches the classical
+        outcome as a degree-1 X leaf carrying the symbolic boolean phase,
+        tagged with ``outcome_type='measurement'`` in vertex data. The
+        leaf is off-wire, so the qubit wire continues through the Z(0)
+        spider unaffected by the outcome.
+        """
         r = q_mapper.next_row(self.target)
-        if self.result_bit is not None:
-            r = max(r, c_mapper.next_row(self.result_bit))
-        v = self.graph_add_node(g,
+        if self.result_symbol is not None:
+            symbol_name = self.result_symbol
+        elif self.result_bit is not None:
+            symbol_name = "c[{}]".format(self.result_bit)
+        else:
+            symbol_name = "m{}".format(self.target)
+        phase = new_var(name=symbol_name, is_bool=True, registry=g.var_registry)
+        # Z(0) on the qubit wire: the measurement itself.
+        meas_v = self.graph_add_node(g,
             q_mapper,
             VertexType.Z,
             self.target,
-            r,
-            ground=True)
-        q_mapper.set_next_row(self.target, r+1)
-        # Classical result
-        if self.result_bit is not None:
-            u = self.graph_add_node(g,
-                c_mapper,
-                VertexType.X,
-                self.result_bit,
-                r)
-            g.add_edge((v,u), EdgeType.SIMPLE)
-            c_mapper.set_next_row(self.result_bit, r+1)
+            r)
+        # X(phase) as a leaf: the classical outcome, branching off.
+        outcome_v = g.add_vertex(VertexType.X,
+            q_mapper.to_qubit(self.target), r + 0.5, phase)
+        g.add_edge((meas_v, outcome_v), EdgeType.SIMPLE)
+        g.set_vdata(outcome_v, 'outcome_type', 'measurement')
+        # Store the classical destination explicitly so it survives
+        # ``g.substitute_variables(...)`` unwrapping the Poly phase.
+        g.set_vdata(outcome_v, 'result_symbol', symbol_name)
+        q_mapper.set_next_row(self.target, r + 1)
 
-gate_types: Dict[str,Type[Gate]] = {
+    def to_graph(self, g: BaseGraph[VT, ET], q_mapper: TargetMapper[VT], c_mapper: TargetMapper[VT]) -> None:
+        self.to_graph_symbolic_boolean(g, q_mapper)
+
+gate_types: dict[str, type[Gate]] = {
     "XPhase": XPhase,
     "NOT": NOT,
     "SX": SX,
@@ -1273,6 +1613,7 @@ gate_types: Dict[str,Type[Gate]] = {
     "CNOT": CNOT,
     "CZ": CZ,
     "ParityPhase": ParityPhase,
+    "PhaseGadget": PhaseGadget,
     "XCX": XCX,
     "SWAP": SWAP,
     "CSWAP": CSWAP,
@@ -1293,12 +1634,14 @@ gate_types: Dict[str,Type[Gate]] = {
     "RXX": RXX,
     "FSim": FSim,
     "InitAncilla": InitAncilla,
+    "Reset": Reset,
     "PostSelect": PostSelect,
     "DiscardBit": DiscardBit,
     "Measurement": Measurement,
+    "ConditionalGate": ConditionalGate,
 }
 
-qasm_gate_table: Dict[str, Type[Gate]] = {
+qasm_gate_table: dict[str, type[Gate]] = {
     "x": NOT,
     "y": Y,
     "z": Z,

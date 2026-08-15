@@ -1,4 +1,4 @@
-# PyZX - Python library for quantum circuit rewriting 
+# PyZX - Python library for quantum circuit rewriting
 #        and optimization using the ZX-calculus
 # Copyright (C) 2018 - Aleks Kissinger and John van de Wetering
 
@@ -27,7 +27,7 @@ __all__ = [
     "qft",
 ]
 
-import random, types
+import random, types, math
 from fractions import Fraction
 
 from typing import Optional, List, Set, Union
@@ -37,6 +37,7 @@ import numpy as np
 from pyzx.circuit.gates import CNOT, ZPhase
 from pyzx.linalg import Mat2, MatLike
 
+from pyzx.routing.cnot_mapper import ElimMode
 from pyzx.routing.parity_maps import CNOT_tracker, Parity
 from pyzx.routing.phase_poly import PhasePoly, mat22partition
 
@@ -76,7 +77,7 @@ def spider(
     outputs: int,
     phase:Optional[Union[FractionLike, complex]]=None,
     ) -> BaseGraph:
-    """Returns a Graph containing a single spider of the specified type 
+    """Returns a Graph containing a single spider of the specified type
     and with the specified number of inputs and outputs."""
     if typ == "Z": typ = VertexType.Z
     elif typ == "X": typ = VertexType.X
@@ -128,7 +129,8 @@ def CNOT_HAD_PHASE_circuit(
         p_had: float = 0.2,
         p_t: float = 0.2,
         clifford:bool=False,
-        seed:Optional[int]=None
+        seed:Optional[int]=None,
+        sigma:Optional[float]=None
         ) -> Circuit:
     """Construct a Circuit consisting of CNOT, HAD and phase gates.
     The default phase gate is the T gate, but if ``clifford=True``\\ , then
@@ -140,6 +142,10 @@ def CNOT_HAD_PHASE_circuit(
         p_had: probability that each gate is a Hadamard gate
         p_t: probability that each gate is a T gate (or if ``clifford`` is set, S gate)
         clifford: when set to True, the phase gates are S gates instead of T gates.
+        seed: When given, this specifies the RNG seed.
+        sigma: standard deviation (hence sigma^2 = variance) of CNOT spread across qubits, following a normal distribution.
+        i.e. sigma=inf means all qubits are weighted equally when deciding spread of CNOT, sigma=1 means
+        CNOTs always span exactly a one qubit gap, and e.g. epsilion=2 favours local qubits over long-range connections, etc.
 
     Returns:
         A random circuit consisting of Hadamards, CNOT gates and phase gates.
@@ -158,21 +164,23 @@ def CNOT_HAD_PHASE_circuit(
             if not clifford: c.add_gate("T",rand.randrange(qubits))
             else: c.add_gate("S",rand.randrange(qubits))
         else:
-            tgt = rand.randrange(qubits)
-            while True:
-                ctrl = rand.randrange(qubits)
-                if ctrl!=tgt: break
-            c.add_gate("CNOT",tgt,ctrl)
+            q0 = rand.randrange(qubits)
+            q1 = gaussian_random_qubit_target(rand,q0,qubits,sigma)
+            c.add_gate("CNOT",q0,q1)
     return c
 
 
-def cnots(qubits: int, depth: int, backend:Optional[str]=None, seed:Optional[int]=None) -> BaseGraph:
+def cnots(qubits: int, depth: int, backend:Optional[str]=None, seed:Optional[int]=None, sigma:Optional[float]=None) -> BaseGraph:
     """Generates a circuit consisting of randomly placed CNOT gates.
     
     Args:
     qubits: Amount of qubits in circuit
     depth: Depth of circuit
     backend: When given, should be one of the possible :ref:`graph_api` backends.
+    seed: When given, this specifies the RNG seed.
+    sigma: standard deviation (hence sigma^2 = variance) of CNOT spread across qubits, following a normal distribution.
+        i.e. sigma=inf means all qubits are weighted equally when deciding spread of CNOT, sigma=1 means
+        CNOTs always span exactly a one qubit gap, and e.g. epsilion=2 favours local qubits over long-range connections, etc.
     
     Returns:
         Instance of graph of the given backend
@@ -203,8 +211,7 @@ def cnots(qubits: int, depth: int, backend:Optional[str]=None, seed:Optional[int
     else: rand = random
     for i in range(depth):
         c = rand.randint(0, qubits-1)
-        t = rand.randint(0, qubits-2)
-        if t >= c: t += 1
+        t = gaussian_random_qubit_target(rand,c,qubits,sigma)
         es += [(q[c], v), (q[t], v+1), (v, v+1)]
         q[c] = v
         q[t] = v+1
@@ -258,15 +265,16 @@ def random_phase(add_t: bool, rand:Union[random.Random,types.ModuleType]=random)
     return Fraction(rand.randint(1,4),2)
 
 def cliffordTmeas(
-        qubits: int, 
-        depth: int, 
-        p_t:Optional[float]=None, 
-        p_s:Optional[float]=None, 
-        p_hsh:Optional[float]=None, 
-        p_cnot:Optional[float]=None, 
-        p_meas:Optional[float]=None, 
+        qubits: int,
+        depth: int,
+        p_t:Optional[float]=None,
+        p_s:Optional[float]=None,
+        p_hsh:Optional[float]=None,
+        p_cnot:Optional[float]=None,
+        p_meas:Optional[float]=None,
         backend:Optional[str]=None,
-        seed:Optional[int]=None
+        seed:Optional[int]=None,
+        sigma:Optional[float]=None
         ) -> BaseGraph:
     """Generates a circuit consisting of randomly placed Clifford+T gates. Optionally, take
     probabilities of adding T, S, HSH, CNOT, and measurements.
@@ -282,6 +290,10 @@ def cliffordTmeas(
     :param p_meas: Probability that each gate is a measurement.
     :param backend: When given, should be one of the possible :ref:`graph_api` backends.
     :rtype: Instance of graph of the given backend.
+    :param seed: When given, this specifies the RNG seed.
+    :param sigma: standard deviation (hence sigma^2 = variance) of CNOT spread across qubits, following a normal distribution.
+        i.e. sigma=inf means all qubits are weighted equally when deciding spread of CNOT, sigma=1 means
+        CNOTs always span exactly a one qubit gap, and e.g. epsilion=2 favours local qubits over long-range connections, etc.
     """
     g = Graph(backend)
     qs = list(range(qubits))  # tracks qubit indices of vertices
@@ -347,8 +359,7 @@ def cliffordTmeas(
 
         if p > 1 - p_cnot:
             # apply CNOT gate
-            q1 = rand.randrange(qubits-1)
-            if q1 >= q0: q1 += 1
+            q1 = gaussian_random_qubit_target(rand,q0,qubits,sigma)
 
             g.add_vertex(VertexType.X,q1,r-1)
             g.add_edge((qs[q1], v))
@@ -396,7 +407,8 @@ def cliffordT(
         p_hsh:Optional[float]=None,
         p_cnot:Optional[float]=None,
         backend:Optional[str]=None,
-        seed:Optional[int]=None
+        seed:Optional[int]=None,
+        sigma:Optional[float]=None
         ) -> BaseGraph:
     """Generates a circuit consisting of randomly placed Clifford+T gates. Optionally, take
     probabilities of adding T, S, HSH, and CNOT. If probabilities for only a subset of gates
@@ -411,16 +423,21 @@ def cliffordT(
     :param p_cnot: Probability that each gate is a CNOT-gate.
     :param backend: When given, should be one of the possible :ref:`graph_api` backends.
     :rtype: Instance of graph of the given backend.
+    :param seed: When given, this specifies the RNG seed.
+    :param sigma: standard deviation (hence sigma^2 = variance) of CNOT spread across qubits, following a normal distribution.
+        i.e. sigma=inf means all qubits are weighted equally when deciding spread of CNOT, sigma=1 means
+        CNOTs always span exactly a one qubit gap, and e.g. epsilion=2 favours local qubits over long-range connections, etc.
     """
-    return cliffordTmeas(qubits, depth, p_t, p_s, p_hsh, p_cnot, 0, backend, seed)
+    return cliffordTmeas(qubits, depth, p_t, p_s, p_hsh, p_cnot, 0, backend, seed, sigma)
 
 def cliffords(
-        qubits: int, 
-        depth: int, 
+        qubits: int,
+        depth: int,
         no_hadamard:bool=False,
         t_gates:bool=False,
         backend:Optional[str]=None,
-        seed:Optional[int]=None
+        seed:Optional[int]=None,
+        sigma:Optional[float]=None
         ):
     """Generates a circuit consisting of randomly placed Clifford gates.
     Uses a different approach to generating Clifford circuits then :func:`cliffordT`.
@@ -430,6 +447,10 @@ def cliffords(
     :param no_hadamard: Whether hadamard edges are allowed to be placed.
     :param backend: When given, should be one of the possible :ref:`graph_api` backends.
     :rtype: Instance of graph of the given backend.
+    :param seed: When given, this specifies the RNG seed.
+    :param sigma: standard deviation (hence sigma^2 = variance) of CNOT spread across qubits, following a normal distribution.
+        i.e. sigma=inf means all qubits are weighted equally when deciding spread of CNOT, sigma=1 means
+        CNOTs always span exactly a one qubit gap, and e.g. epsilion=2 favours local qubits over long-range connections, etc.
     """
 
     #randomness parameters
@@ -466,13 +487,12 @@ def cliffords(
     else: rand = random
     for i in range(depth):
         c = rand.randint(0, qubits-1)
-        t = rand.randint(0, qubits-2)
-        if t >= c: t += 1
+        t = gaussian_random_qubit_target(rand,c,qubits,sigma)
         if accept(p_two_qubit,rand):
-            if no_hadamard or accept(p_cnot,rand): 
+            if no_hadamard or accept(p_cnot,rand):
                 es1.append((v, v+1))
                 ty += [VertexType.Z, VertexType.X]
-            else: 
+            else:
                 es2.append((v,v+1))
                 typ: VertexType = rand.choice([VertexType.Z, VertexType.X])
                 ty += [typ, typ]
@@ -556,7 +576,7 @@ def circuit_identity_commuting_controls(alpha:Fraction,beta:Fraction) -> Circuit
     """Returns the circuit UVU*V* where U=NCZ(2beta) and V=CX(2alpha).
     Since these operations commute this circuit is equal to the identity.
     See page 13 of https://arxiv.org/pdf/1705.11151.pdf for more details."""
-    cb = Circuit(2) 
+    cb = Circuit(2)
     cb.add_gate("NOT",0)
     cb.add_gate("ZPhase",0,beta)
     cb.add_gate("ZPhase",1,beta)
@@ -698,7 +718,7 @@ def phase_poly_from_gadgets(n_qubits: int, n_gadgets: int) -> Circuit:
     zphase_dict = {p: Fraction(1, 4) for p in parities}
     out_parities = mat22partition(Mat2.id(n_qubits))
     phase_poly = PhasePoly(zphase_dict, out_parities)
-    return phase_poly.rec_gray_synth("gauss", architecture=None)[0]
+    return phase_poly.rec_gray_synth(ElimMode.GAUSS_MODE, architecture=None)[0]
 
 
 def build_random_parity_map(qubits: int, n_cnots: int, circuit=None) -> MatLike:
@@ -738,3 +758,50 @@ def qft(qubits: int) -> Circuit:
         for j in range(i+1, qubits):
             c.add_gate('CPhase', j, i, Fraction(1, 2**(j-i+1)))
     return c
+
+def gaussian_random_qubit_target(rand: Union[random.Random, types.ModuleType], q0: int, qubits: int, sigma: float|None) -> int:
+    """Selects a random target qubit according to a discrete Gaussian distribution
+    favouring short-range interactions.
+
+    Given a control qubit ``q0``, this function samples a distinct target qubit
+    ``q1`` with probability proportional to:
+
+    P(dq) = 1/\sqrt{2*pi*sigma^2} * exp{-(dq-1)^2/(2*sigma^2)}
+
+    where ``dq = |q1 - q0|`` is the span between the qubits and ``sigma``
+    controls the variance of the distribution. Smaller values of ``sigma``
+    strongly favour nearest-neighbour interactions, while larger values approach
+    a more uniform distribution.
+
+    Args:
+        rand: Random number generator instance.
+        q0: Control qubit index.
+        qubits: Total number of qubits.
+        sigma: Standard deviation parameter controlling locality bias.
+            0 always returns a neighbouring qubit and float("inf") acts as a uniform distribution.
+
+    Returns:
+        A randomly selected target qubit index distinct from ``q0`` with locality preference influenced by sigma.
+    """
+
+    if (sigma is None): # uniform distribution for qubit spread of CNOT (essentially sigma=float("inf") but more efficient to just make this a special case)
+        q1 = rand.randrange(qubits-1)
+        if q1 >= q0: q1 += 1
+        return q1
+    elif (sigma==0): sigma=1e-100 # avoids a "divide by zero" error
+
+    choices = []
+    weights = []
+
+    for q1 in range(qubits):
+        if q1 == q0:
+            continue
+
+        dq = abs(q1 - q0)
+
+        weight = math.exp(-((dq - 1) ** 2) / (2 * sigma ** 2))
+
+        choices.append(q1)
+        weights.append(weight)
+
+    return rand.choices(choices, weights=weights, k=1)[0]

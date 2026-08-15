@@ -1,4 +1,4 @@
-# PyZX - Python library for quantum circuit rewriting 
+# PyZX - Python library for quantum circuit rewriting
 #        and optimization using the ZX-calculus
 # Copyright (C) 2018 - Aleks Kissinger and John van de Wetering
 
@@ -19,17 +19,18 @@ __all__ = ['extract_circuit', 'extract_simple', 'graph_to_swaps', 'extract_cliff
 
 from fractions import Fraction
 import itertools
+from typing_extensions import deprecated
 
 from .utils import EdgeType, VertexType, toggle_edge
 from .linalg import Mat2, Z2
-from .simplify import id_simp, tcount,full_reduce, is_graph_like
-from .rewrite_rules.rules import apply_rule, pivot, match_spider_parallel, spider
+from .simplify import id_simp, tcount, full_reduce, is_graph_like, pivot_simp
+from .rewrite_rules import *
 from .circuit import Circuit
 from .circuit.gates import Gate, ParityPhase, CNOT, HAD, ZPhase, XPhase, CZ, XCX, SWAP, InitAncilla
 
 from .graph.base import BaseGraph, VT, ET
 
-from typing import List, Optional, Tuple, Dict, Set, Union, Iterator
+from typing import Generic, List, Optional, Tuple, Dict, Set, Union, Iterator
 
 
 def bi_adj(g: BaseGraph[VT,ET], vs:List[VT], ws:List[VT]) -> Mat2:
@@ -38,10 +39,10 @@ def bi_adj(g: BaseGraph[VT,ET], vs:List[VT], ws:List[VT]) -> Mat2:
     return Mat2([[1 if g.connected(v,w) else 0 for v in vs] for w in ws])
 
 def connectivity_from_biadj(
-        g: BaseGraph[VT,ET], 
-        m: Mat2, 
-        left:List[VT], 
-        right: List[VT], 
+        g: BaseGraph[VT,ET],
+        m: Mat2,
+        left:List[VT],
+        right: List[VT],
         edgetype:EdgeType=EdgeType.HADAMARD):
     """Replace the connectivity in ``g`` between the vertices in ``left`` and ``right``
     by the biadjacency matrix ``m``. The edges will be of type ``edgetype``."""
@@ -52,17 +53,18 @@ def connectivity_from_biadj(
             elif not m.data[i][j] and g.connected(right[i],left[j]):
                 g.remove_edge(g.edge(right[i],left[j]))
 
+@deprecated("streaming_extract is deprecated, use extract_circuit instead")
 def streaming_extract(
-        g:BaseGraph[VT,ET], 
-        optimize_czs:bool=True, 
-        optimize_cnots:int=2, 
+        g:BaseGraph[VT,ET],
+        optimize_czs:bool=True,
+        optimize_cnots:int=2,
         quiet:bool=True
         ) -> Circuit:
-    print("This function is deprecated. Call extract_circuit() instead.")
-    return extract_circuit(g, optimize_czs, optimize_cnots, quiet)
+    """Deprecated: Use :func:`extract_circuit` instead."""
+    return extract_circuit(g, optimize_czs=optimize_czs, optimize_cnots=optimize_cnots, quiet=quiet)
 
 def permutation_as_swaps(perm:Dict[int,int]) -> List[Tuple[int,int]]:
-    """Returns a series of swaps that realises the given permutation. 
+    """Returns a series of swaps that realises the given permutation.
 
     Args:
         perm: A dictionary where both keys and values take values in 0,1,...,n."""
@@ -84,7 +86,7 @@ def permutation_as_swaps(perm:Dict[int,int]) -> List[Tuple[int,int]]:
 
 def column_optimal_swap(m: Mat2) -> Dict[int,int]:
     """Given a matrix m, tries to find a permutation of the columns such that
-    there are as many ones on the diagonal as possible. 
+    there are as many ones on the diagonal as possible.
     This reduces the number of row operations needed to do Gaussian elimination.
     """
     r, c = m.rows(), m.cols()
@@ -93,7 +95,7 @@ def column_optimal_swap(m: Mat2) -> Dict[int,int]:
 
     for i in range(r):
             for j in range(c):
-                if m.data[i][j]: 
+                if m.data[i][j]:
                     connections[i].add(j)
                     connectionsr[j].add(i)
 
@@ -200,7 +202,7 @@ def find_minimal_sums(m: Mat2, reversed_search=False) -> Optional[Tuple[int, ...
 
 def greedy_reduction(m: Mat2) -> Optional[List[Tuple[int, int]]]:
     """Returns a list of tuples (r1,r2) that specify which row should be added to which other row
-    in order to reduce one row of m to only contain a single 1. 
+    in order to reduce one row of m to only contain a single 1.
     Used in :func:`extract_circuit` and :func:`lookahead_extract_base`"""
     indicest = find_minimal_sums(m)
     if indicest is None: return indicest
@@ -352,7 +354,7 @@ def max_overlap(cz_matrix: Mat2) -> Tuple[Tuple[int,int],List[int]]:
     """Given an adjacency matrix of qubit connectivity of a CZ circuit, returns:
     a) the rows which have the maximum inner product
     b) the list of common qubits between these rows.
-    Used in :func:`extract_circuit` to more optimally place CZ gates. 
+    Used in :func:`extract_circuit` to more optimally place CZ gates.
     """
     N = len(cz_matrix.data[0])
 
@@ -580,7 +582,8 @@ def remove_gadget(g: BaseGraph[VT, ET], frontier: List[VT], qubit_map: Dict[VT, 
         if w not in gadgets: continue
         for v in g.neighbors(w):
             if v in frontier:
-                apply_rule(g, pivot, [((w, v), ([], [o for o in g.neighbors(v) if o in outputs]))])  # type: ignore
+                # apply_rule(g, pivot, [((w, v), ([], [o for o in g.neighbors(v) if o in outputs]))])  # type: ignore
+                pivot_simp.apply(g, w,v)
                 frontier.remove(v)
                 del gadgets[w]
                 frontier.append(w)
@@ -597,28 +600,49 @@ def extract_circuit(
         up_to_perm: bool = False,
         quiet: bool = True
         ) -> Circuit:
-    """Given a graph put into semi-normal form by :func:`~pyzx.simplify.full_reduce`, 
+    """Given a graph put into semi-normal form by :func:`~pyzx.simplify.full_reduce`,
     it extracts its equivalent set of gates into an instance of :class:`~pyzx.circuit.Circuit`.
     This function implements a more optimized version of the algorithm described in
     `There and back again: A circuit extraction tale <https://arxiv.org/abs/2003.01664>`_
 
+    The graph must be a unitary (non-hybrid) diagram with equal numbers of
+    inputs and outputs.  Graphs containing ground vertices (e.g., from
+    circuits with measurements or resets) are not supported and will raise
+    :class:`ValueError`.
+
     Args:
         g: The ZX-diagram graph to be extracted into a Circuit.
-        optimize_czs: Whether to try to optimize the CZ-subcircuits by exploiting overlap between the CZ gates
+        optimize_czs: Whether to try to optimize the CZ-subcircuits by exploiting overlap between the CZ gates.
         optimize_cnots: (0,1,2,3) Level of CNOT optimization to apply.
         up_to_perm: If true, returns a circuit that is equivalent to the given graph up to a permutation of the inputs.
         quiet: Whether to print detailed output of the extraction process.
 
+    Raises:
+        ValueError: If the graph contains ground vertices or has differing
+            numbers of inputs and outputs.
+
     Warning:
-        Note that this function changes the graph `g` in place. 
-        In particular, if the extraction fails, the modified `g` shows 
-        how far the extraction got. If you want to keep the original `g`
-        then input `g.copy()` into `extract_circuit`.
+        Note that this function changes the graph ``g`` in place.
+        In particular, if the extraction fails, the modified ``g`` shows
+        how far the extraction got. If you want to keep the original ``g``
+        then input ``g.copy()`` into ``extract_circuit``.
     """
 
     gadgets = {}
     inputs = g.inputs()
     outputs = g.outputs()
+
+    if g.is_hybrid():
+        raise ValueError(
+            "extract_circuit cannot handle graphs that contain ground "
+            "vertices (e.g., from circuits with measurements or resets)."
+        )
+
+    if len(inputs) != len(outputs):
+        raise ValueError(
+            "extract_circuit does not support graphs with differing numbers "
+            "of inputs and outputs (e.g., from circuits with measurements)."
+        )
 
     c = Circuit(len(outputs))
 
@@ -707,7 +731,7 @@ def extract_circuit(
     if optimize_czs:
         if not quiet: print("CZ gates saved:", czs_saved)
     # Outside of loop. Finish up the permutation
-    id_simp(g, quiet=True)  # Now the graph should only contain inputs and outputs
+    id_simp(g)  # Now the graph should only contain inputs and outputs
     # Since we were extracting from right to left, we reverse the order of the gates
     c.gates = list(reversed(c.gates))
     return graph_to_swaps(g, up_to_perm) + c
@@ -791,6 +815,16 @@ def graph_to_swaps(g: BaseGraph[VT, ET], no_swaps: bool = False) -> Circuit:
     inputs = g.inputs()
     outputs = g.outputs()
 
+    if g.is_hybrid():
+        raise ValueError(
+            "graph_to_swaps cannot handle graphs that contain ground vertices"
+        )
+
+    if len(inputs) != len(outputs):
+        raise ValueError(
+            "graph_to_swaps requires equal numbers of inputs and outputs"
+        )
+
     if not is_graph_like(g):
         raise ValueError("Input graph is not graph-like")
 
@@ -798,7 +832,7 @@ def graph_to_swaps(g: BaseGraph[VT, ET], no_swaps: bool = False) -> Circuit:
 
     for q,v in enumerate(outputs): # check for a last layer of Hadamards, and see if swap gates need to be applied.
         inp = list(g.neighbors(v))[0]
-        if inp not in inputs: 
+        if inp not in inputs:
             raise TypeError("Algorithm failed: Graph is not fully reduced")
             return c
         if g.edge_type(g.edge(v,inp)) == EdgeType.HADAMARD:
@@ -876,7 +910,7 @@ def extract_clifford_normal_form(g: BaseGraph[VT,ET]) -> Circuit:
     return c
 
 
-class LookaheadNode:
+class LookaheadNode(Generic[VT, ET]):
     """
     A class for the lookahead extraction.
 
@@ -1029,7 +1063,7 @@ class LookaheadNode:
         c = c + self.c
         if not self.expanded:
             self.collected = True
-            id_simp(self.g, quiet=True)
+            id_simp(self.g)
             c.gates = list(reversed(c.gates))
             c = graph_to_swaps(self.g, up_to_perm) + c
             d = get_optimize_value(c, self.opt_depth, True)
@@ -1052,7 +1086,7 @@ class LookaheadNode:
         """
         if not self.expanded and not self.collected and len(self.frontier) == 0:
             self.collected = True
-            id_simp(self.g, quiet=True)
+            id_simp(self.g)
             self.c.gates = list(reversed(self.c.gates))
             self.c = graph_to_swaps(self.g, up_to_perm) + self.c
             d = get_optimize_value(self.c, self.opt_depth, True)

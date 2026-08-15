@@ -6,6 +6,111 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Right now this project is in Beta and does not yet follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Hence, occasionally changes will be backwards incompatible (although they will all be documented here).
 
+## [Unreleased]
+
+### Fixed
+- `to_tikz` no longer drops Hadamards on edges that touch a boundary. Such an edge was exported as a plain wire plus a `hadamard` node that no `\draw` referenced, so the Hadamard was lost on reimport and the diagram gained a disconnected H-box. These edges now use the same `hadamard edge` style as every other Hadamard edge (by @gauthamkanagaraj).
+
+## [0.10.5] - 2026-08-01
+
+### Fixed
+- `string_to_phase` no longer returns a constant `Poly` for a numeric expression that misses its fast parsing path (e.g. the `(1)*1/4` form the TikZ importer produces for `\frac{\pi}{4}`): a parse result without free variables is now collapsed to a `Fraction`. Such a `Poly` compared and printed like its numeric value but broke code that branches on the phase type, e.g. `to_tensor`/`to_matrix` raised `Can't convert diagram with parameters to tensor` after a `to_tikz`/`tikz_to_graph` round trip (by @gauthamkanagaraj).
+- Correctly handling custom gate identifiers ending in `gate` (by @dlyongemallo).
+- `Circuit.from_qasm` routes through the symbolic grammar and accepts parenthesised subexpressions in gate phase arguments, e.g., `rz((pi/2 + pi/4)) q[0];` or `u3(pi, (a+b)/2, c) q[0];` (by @dlyongemallo).
+- Register identifier validation more closely matches OpenQASM 2 and 3 specs (by @dlyongemallo).
+
+### Added
+- `Circuit.from_qasm` supports parametrised custom gate definitions, e.g., `gate phase_kick(theta) q { rz(theta) q; ... }` (by @dlyongemallo).
+- The symbolic expression parser (`pyzx.symbolic.parse`) now accepts division, e.g., `theta/2` or `(x + y)/2`. Divisors must be rational (or complex) constants; division by an integer produces an exact `Fraction` coefficient. As a side effect, `^` binds tighter than `*` and `/`. (by @dlyongemallo)
+- Regression test for `unsafe_pivot` with boolean pivot phases (by @dlyongemallo).
+- Added support for zooming in D3 drawings (by @doczenwiry).
+- `apply_to_boolean_axels` opt-in flag to `(unsafe_)pauli_push`, so boolean parameters are not transformed into non-boolean phase by default (by @dlyongemallo).
+- Added support for the detection/highlighting of overlapping nodes in D3 drawings (by @doczenwiry).
+
+### Changed
+- `Multigraph.edge(s, t)` now raises `ValueError` on ambiguous mixed-type parallel edges or when no matching edge exists, instead of silently returning one; pass `et` to disambiguate. The `et` default is now `None` on `BaseGraph.edge` (`GraphS.edge` and `GraphIG.edge` ignore it). Internal callers were updated to match; as a side effect, `PauliWeb.add_edge` and `PauliWeb.graph_with_errors` now propagate this error rather than silently preferring the `SIMPLE` edge (by @dlyongemallo).
+
+## [0.10.4] - 2026-07-01
+
+### Added
+- Added the "magic cat" decomposition strategy from https://arxiv.org/pdf/2202.09202 (which previously only existed in Quizx). (by @mjsutcliffe99).
+- `settings.strict_phase_types` (default `True`) rejects float phases at `set_phase`/`add_to_phase` rather than letting them flow into the graph and crash downstream rewrite rules. Set to `False` to opt in to automatic conversion to `Fraction` using `settings.float_to_fraction_max_denominator`, accepting the resulting precision loss. Fixes crash in `full_reduce` with non-Clifford spiders (by @dlyongemallo).
+
+## [0.10.3] - 2026-06-01
+
+### Added
+- The circuit generation functions in pyzx.generate now accept an additional optional argument, sigma, allowing a CNOT spread based on a Gaussian distribution rather than a uniform distribution for control over how localised the CNOTs should be. (by @mjsutcliffe99).
+- `pyzx.simplify.drop_orphan_reset_discards`: opt-in cleanup pass that removes the disconnected `boundary -- Z(0) -- X(_rN)` components left behind by `Circuit.to_graph(elide_initial_resets=False)` on circuits with leading resets, matching the elided graph with |0⟩ applied to those inputs (by @dlyongemallo).
+
+
+### Deprecated
+- Deprecated pyzx.simulate.py as it is starting to get bloated with all the new decompositions and strategies that have been added in recent years. All the functions in this file should still work (with deprecation warnings) but are rerouted to their new homes under the pyzx.simulation folder. (by @mjsutcliffe99).
+
+### Changed
+- Refactored the simulation API to make it more formulaic and extensible. Individual decompositions are no longer included as distinct functions inside pyzx.simulate.py but now are provided their own individual files under pyzx.simulation.decompositions and share a common caller function. For example, pyzx.simulate.apply_cat3(g,v) is instead now pyzx.simulation.apply_decomp(Decomp.CAT_3,g,v), etc. (by @mjsutcliffe99).
+- Likewise, decomposition strategies are separated into individual files under pyzx.simulation.strategies and called similarly through e.g. zx.simulation.full_decompose(Strategy.BSS,g). (by @mjsutcliffe99).
+- `pivot_boundary_simp` and `pivot_gadget_simp` are now `RewriteSimpDoubleVertex` instances (previously `RewriteSimpGraph`), so their `is_match` and `apply` methods take two vertices `(v, w)` rather than a `List[VT]`. Whole-graph simplification (calling them as a function or via `simp()`) is unchanged. This is a breaking change for code that relied on the old `apply(graph, vertices)` signature. (by @dlyongemallo)
+
+### Fixed
+- Multigraph handling of parallel mixed simple/Hadamard edges in tensor contraction, several rewrite rules, and `PauliWeb` (by @dlyongemallo).
+- Reset gate representation changed from ground-based to symbolic boolean paradigm, avoiding paradigm-mixing issues that destroyed measurement phases during simplification of circuits with mid-circuit resets. As a side effect, `graph_to_circuit` now recovers conditional X-type rotations (`NOT`, `XPhase`, `SX`), since X-type vertices on the qubit wire are unambiguous now that measurement outcomes are represented as leaves. `Circuit.to_graph` gains an opt-in `elide_initial_resets` flag (default `False`) that skips the discard chain for a `Reset` on an unmodified input wire, useful for circuits with OpenQASM-style implicit |0⟩ inputs. Each `_rN` reset variable is allocated to the lowest name not already in the graph's variable registry to avoid aliasing user-supplied phases, and `graph_to_circuit` excludes vertices on classical-bit wires (e.g. the `Z`/`X` pair from `DiscardBit`) so hybrid graphs round-trip without extra phantom qubits (by @dlyongemallo).
+- The boundary and gadget pivot rules now correctly match the `(P2)` and `(P3)` rules in the paper [arXiv:1903.10477](https://doi.org/10.1103/PhysRevA.102.022406) when applied manually, e.g., from ZXLive (by @dlyongemallo).
+
+## [0.10.2] - 2026-05-01
+
+## [0.10.1] - 2026-04-28
+
+### Added
+- X-H bialgebra support and tests for both Z-X and X-H bialgebra (by @dlyongemallo).
+- `substitute_variables()` methods on `BaseGraph` and `Scalar` to substitute values into symbolic variables in graph phases, Z-box labels, and scalars, including symbolic-to-symbolic substitution via `Poly` values (by @dlyongemallo).
+
+### Fixed
+- Fixed `Term.__mul__` not reducing boolean variable exponents, e.g., `x^2 = x`. (by @dlyongemallo).
+- Incorrect scalar in the Z-X bialgebra rule when both spiders carry Pauli phases, including symbolic Boolean phases (by @dlyongemallo).
+- `subgraph_from_vertices` copies only variables used in the subgraph (by @dlyongemallo).
+- `extract_circuit` raises `ValueError` for graphs containing ground vertices or mismatched input/output counts, instead of a `KeyError` crash (by @dlyongemallo).
+- Missed copying `_grounds` in `clone()`, incorrectly checking destination `is_ground` instead of source in `tensor()` (by @dlyongemallo).
+- Bialgebra rule to accept parallel edges; spread out the resulting vertices so they don't overlap (by @dlyongemallo).
+
+### Removed
+- `Measurement.to_graph_ground`; measurements now always use the symbolic boolean representation (by @dlyongemallo).
+- The `galois` package dependency. PyZX now uses the internal `Mat2` class for computing Pauli webs in `pyzx.web`.
+
+### Changed
+- Migrated project configuration from `setup.py` to `pyproject.toml`. Make the `galois` package an optional dependency, as it is only used in `pyzx.web`. (by @dlyongemallo)
+- Dropped support for Python 3.9 (end of life). Added support for Python 3.13. (by @dlyongemallo)
+
+## [0.10.0] - 2026-03-12
+
+The big change in this version is that the structure of the rewrite rules has been completely refactored. This shouldn't change anything for most users that just want to use the built-in simplification routines, but it might change how you use single rule calls. In particular, the simplification routines in `simplify`, like `spider_simp` are now no longer functions, but instances of the `Rewrite` class. This exposes a way to match, rewrite and automatically simplify with this rewrite rule. If you call it like a function as before, then it will have the same behaviour as the original simplification routine based on that rewrite rule.
+
+Other changes include much better support for rewriting diagrams that involve symbolic (Clifford) phases; parsing qasm circuits that include measurements (and loading them in symbolic phases); representing CSS codes and Pauli webs; and many bug fixes that improve the reliability of `Multigraph`, transforming graphs to json and calculating the tensor of diagrams.
+
+### Added
+- Improved support for circuits and qasm files involving ancilla preparations and measurements. In particular, a measurement outcome can now be represented by a symbolic variable. This includes support for openQASM reset and measure operations. Implemented by  @dlyongemallo and @Zhaoyilunnn.
+- Better support for doing rewrites involving symbolic phases. In particular, symbolic Clifford phases can now be used in graph-theoretic rewrites like local complementation and pivoting. Implemented by @RazinShaikh.
+- Can now calculate all Pauliwebs in arbitrary Clifford diagrams (see demos/PauliWebs on Clifford circuits with measurements.ipynb). Implemented by @maximilianruesch.
+- New `css.py` file with some utilities for working with CSS codes. In particular, `generate_css_encoder_graph` which generates a normal form diagram from a set of stabilizer generators. Implemented by @tinghui2012.
+- Some big improvements to documentation. Functionality regarding routing, using symbolic variables and using a genetic coding heuristic for rewriting are now properly documented. In addition you can check out the `rules.ipynb` notebook in the docs for a full overview of all the rewrites in PyZX.
+- New `auto_layout` option in `zx.draw` for graphs that don't have their own position information set. Implemented by @akissinger.
+- New graphical Fourier transform function to go between phase gadgets and H-boxes in `fourier.py`. Implemented by @akissinger.
+- Functions for `Graph.load` and `Graph.save` to load and directly from files (by @dlyongemallo).
+- Several new H-box rewrite rules (by @dlyongemallo).
+- Support for fault-equivalent rewrites (by @lunarr-eclipse and @boldar99)
+
+### Changed
+- Refactor of the structure of all the rewrites. Rewrites are now built out of a matcher and applier function grouped together in an `Rewrite` instance. The rewrites are all in the submodule `rewrite_rules`, with their `Rewrite` instances still part of `simplify.py` and `hsimplify.py`. The user-facing API is left intact as much as possible, so this should not affect users who have only used the top-level rewrite functions like `full_reduce`. Implemented by @lara-madison.
+- `full_reduce` now also calls `copy_simp` and `supplementarity_simp` so that it indeed does all the rewrites that would simplify a graph. It now throws an exception when the diagram contains an H-box so to not get unexpected behaviour. Implemented by @lara-madison.
+- TikZ export for graphs with symbolic phases now prepends a metadata comment carrying variable type information so `to_tikz`/`tikz_to_graph` round-trips preserve symbolic variables. This is an intentional breaking change for older PyZX versions, which will fail fast when opening such files.
+
+### Fixed
+- Many fixes to using and rewriting Multigraphs (by @RazinShaikh, @boldar99 and @lara-madison).
+- Fixed several bugs in the jsonparser for transforming graphs into json and back (by @dlyongemallo).
+- Fixed several bugs in calculating the tensor of a diagram in several edge-cases, in particular for scalar diagrams.
+
+### Removed
+- Some rewrite rules had  slightly different implementations in `rules.py`, `basicrules.py` and `editor_actions.py`. These have now been merged and streamlined into their respective subfiles in the `rewrite_rules` submodule.
+
 ## [0.9.0] - 2025-01-30
 
 This new version comes with some new big features and changes.

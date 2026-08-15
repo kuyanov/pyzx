@@ -1,4 +1,4 @@
-# PyZX - Python library for quantum circuit rewriting 
+# PyZX - Python library for quantum circuit rewriting
 #        and optimization using the ZX-calculus
 # Copyright (C) 2018 - Aleks Kissinger and John van de Wetering
 
@@ -26,7 +26,7 @@ if __name__ == '__main__':
     sys.path.append('..')
     sys.path.append('.')
 from pyzx.circuit import Circuit
-from pyzx.circuit.gates import CNOT
+from pyzx.circuit.gates import CNOT, Measurement, Reset
 from pyzx.generate import cliffordT
 from pyzx.simplify import clifford_simp
 from pyzx.extract import extract_circuit
@@ -52,7 +52,7 @@ class TestExtract(unittest.TestCase):
         c.add_gate("ZPhase", 0, phase= Fraction(1,4))
 
         g = c.to_graph()
-        
+
         simplify.full_reduce(g,quiet=True)
 
         c2 = extract_circuit(g)
@@ -62,10 +62,10 @@ class TestExtract(unittest.TestCase):
     def test_extract_not_graph_like(self):
         c = Circuit(1)
         c.add_gate("HAD", 0)
-        c.add_gate("ZPhase", 0, phase=1/4)
+        c.add_gate("ZPhase", 0, phase=Fraction(1, 4))
 
         g = c.to_graph()
-        
+
 
         with self.assertRaises(ValueError) as context:
             c = extract_circuit(g)
@@ -100,7 +100,39 @@ class TestExtract(unittest.TestCase):
                 cnot_count+=1
         self.assertTrue(cnot_count==4)
         self.assertTrue(c.verify_equality(c2))
-        
+
+
+
+    def test_extract_measurement_graph_raises(self):
+        """Regression test for zxcalc/pyzx#420: extract_circuit should
+        raise ValueError on reduced graphs from circuits with measurements."""
+        import pyzx as zx
+        c = zx.Circuit(1, bit_amount=1)
+        c.add_gate(Measurement(0, result_bit=0))
+        g = c.to_graph()
+        simplify.full_reduce(g, quiet=True)
+        with self.assertRaises(ValueError):
+            extract_circuit(g)
+
+    def test_extract_ground_vertex_raises(self):
+        """extract_circuit should raise ValueError on graphs with ground
+        vertices, even when input and output counts match."""
+        import pyzx as zx
+        from pyzx.utils import VertexType, EdgeType
+        g = zx.Graph()
+        inp = g.add_vertex(VertexType.BOUNDARY, 0, 0)
+        out = g.add_vertex(VertexType.BOUNDARY, 0, 3)
+        z = g.add_vertex(VertexType.Z, 0, 1)
+        gnd = g.add_vertex(VertexType.Z, 0, 2, ground=True)
+        g.add_edge((inp, z), EdgeType.SIMPLE)
+        g.add_edge((z, gnd), EdgeType.SIMPLE)
+        g.add_edge((z, out), EdgeType.SIMPLE)
+        g.set_inputs((inp,))
+        g.set_outputs((out,))
+        self.assertTrue(g.is_hybrid())
+        with self.assertRaises(ValueError) as ctx:
+            extract_circuit(g)
+        self.assertIn("ground", str(ctx.exception))
 
 
 if __name__ == '__main__':

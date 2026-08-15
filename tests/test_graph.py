@@ -19,7 +19,9 @@ import unittest
 from fractions import Fraction
 import itertools
 import json
+import os
 import sys
+import tempfile
 if __name__ == '__main__':
     sys.path.append('..')
     sys.path.append('.')
@@ -93,6 +95,103 @@ class TestGraphBasicMethods(unittest.TestCase):
         self.assertEqual(g.phases()[0], 1)
         self.assertEqual(g.phases()[1], 1)
 
+    def test_multigraph_edge_strict_on_parallel_mixed(self):
+        """Multigraph.edge(s, t) without an explicit type must raise when
+        parallel edges of multiple types exist between s and t. Specifying
+        the type explicitly returns that edge."""
+        from pyzx.graph.multigraph import Multigraph
+        g = Multigraph()
+        g.set_auto_simplify(False)
+        v1 = g.add_vertex(VertexType.Z, 0, 0)
+        v2 = g.add_vertex(VertexType.Z, 0, 1)
+        g.add_edge((v1, v2), EdgeType.SIMPLE)
+        g.add_edge((v1, v2), EdgeType.HADAMARD)
+
+        with self.assertRaises(ValueError):
+            g.edge(v1, v2)
+
+        e_s = g.edge(v1, v2, EdgeType.SIMPLE)
+        self.assertEqual(g.edge_type(e_s), EdgeType.SIMPLE)
+        e_h = g.edge(v1, v2, EdgeType.HADAMARD)
+        self.assertEqual(g.edge_type(e_h), EdgeType.HADAMARD)
+
+    def test_multigraph_edge_unique_returns_single_edge(self):
+        """Multigraph.edge(s, t) without an explicit type returns the unique
+        edge when only one type is present between s and t."""
+        from pyzx.graph.multigraph import Multigraph
+        g = Multigraph()
+        v1 = g.add_vertex(VertexType.Z, 0, 0)
+        v2 = g.add_vertex(VertexType.Z, 0, 1)
+        g.add_edge((v1, v2), EdgeType.HADAMARD)
+        e = g.edge(v1, v2)
+        self.assertEqual(g.edge_type(e), EdgeType.HADAMARD)
+
+    def test_multigraph_edge_missing_raises(self):
+        """Multigraph.edge raises ValueError (not KeyError) when called on
+        endpoints with no edge between them, including when one endpoint is
+        not a vertex of the graph at all."""
+        from pyzx.graph.multigraph import Multigraph
+        g = Multigraph()
+        v1 = g.add_vertex(VertexType.Z, 0, 0)
+        v2 = g.add_vertex(VertexType.Z, 0, 1)
+        g.add_edge((v1, v2), EdgeType.SIMPLE)
+        with self.assertRaises(ValueError):
+            g.edge(v1, v2, EdgeType.HADAMARD)
+        with self.assertRaises(ValueError):
+            g.edge(v1, 999)
+        with self.assertRaises(ValueError):
+            g.edge(999, v1)
+
+    def test_unsafe_hopf_with_mixed_parallels(self):
+        """``unsafe_hopf`` cancels the type appropriate for the spider colours
+        even when the ``Multigraph`` carries parallel edges of both types: a
+        Z-Z pair with two HADAMARDs (Hopf-cancelling) plus a stray SIMPLE
+        loses both HADAMARDs and keeps the SIMPLE."""
+        from pyzx.graph.multigraph import Multigraph
+        from pyzx.rewrite_rules.hopf_rule import unsafe_hopf
+        g = Multigraph()
+        g.set_auto_simplify(False)
+        v1 = g.add_vertex(VertexType.Z, 0, 0)
+        v2 = g.add_vertex(VertexType.Z, 0, 1)
+        g.add_edge((v1, v2), EdgeType.HADAMARD)
+        g.add_edge((v1, v2), EdgeType.HADAMARD)
+        g.add_edge((v1, v2), EdgeType.SIMPLE)
+        self.assertTrue(unsafe_hopf(g, v1, v2))
+        self.assertEqual(g.num_edges(v1, v2, EdgeType.HADAMARD), 0)
+        self.assertEqual(g.num_edges(v1, v2, EdgeType.SIMPLE), 1)
+
+    def test_check_pivot_rejects_mixed_parallels(self):
+        """``check_pivot`` rejects a vertex pair that has a SIMPLE parallel
+        alongside a HADAMARD edge, since pivot is only defined on a clean
+        Hadamard edge."""
+        from pyzx.graph.multigraph import Multigraph
+        from pyzx.rewrite_rules.pivot_rule import check_pivot
+        g = Multigraph()
+        g.set_auto_simplify(False)
+        v1 = g.add_vertex(VertexType.Z, 0, 0)
+        v2 = g.add_vertex(VertexType.Z, 0, 1)
+        g.add_edge((v1, v2), EdgeType.HADAMARD)
+        g.add_edge((v1, v2), EdgeType.SIMPLE)
+        self.assertFalse(check_pivot(g, v1, v2))
+
+    def test_graph_s_edge_signature_and_canonical_pair(self):
+        """``GraphS.edge`` accepts the optional ``et`` argument added on
+        :meth:`BaseGraph.edge` (so backend-agnostic callers that pass an edge
+        type do not raise ``TypeError``), but ``GraphS`` does not consult
+        ``et``: the canonical ``(min(s, t), max(s, t))`` pair is returned
+        regardless of whether an edge already exists, supporting the
+        documented ``g.add_edge(g.edge(v, w), edgetype=...)`` pattern."""
+        g = Graph()
+        v1 = g.add_vertex(VertexType.Z, 0, 0)
+        v2 = g.add_vertex(VertexType.Z, 0, 1)
+        # The canonical pair is returned before any edge exists.
+        self.assertEqual(g.edge(v1, v2), (v1, v2))
+        self.assertEqual(g.edge(v2, v1), (v1, v2))
+        # The optional ``et`` argument is accepted but does not change the result.
+        self.assertEqual(g.edge(v1, v2, EdgeType.HADAMARD), (v1, v2))
+        g.add_edge(g.edge(v1, v2), edgetype=EdgeType.HADAMARD)
+        self.assertEqual(g.edge_type(g.edge(v1, v2)), EdgeType.HADAMARD)
+
     def test_set_attributes(self):
         g = Graph()
         v = g.add_vertex()
@@ -157,7 +256,32 @@ class TestGraphBasicMethods(unittest.TestCase):
         self.assertEqual(g.num_edges(),g2.num_edges())
         v1, v2 = list(g2.vertices())
         self.assertEqual(g.edge_type(g.edge(v1,v2)),EdgeType.HADAMARD)
-        
+
+    def test_clone_grounds(self):
+        """clone() should preserve ground status of vertices."""
+        for backend in ["simple", "multigraph"]:
+            with self.subTest(backend=backend):
+                g = Graph(backend=backend)
+                v1 = g.add_vertex(VertexType.Z, 0, 0)
+                v2 = g.add_vertex(VertexType.Z, 0, 1, ground=True)
+                g.add_edge((v1, v2))
+                g2 = g.clone()
+                self.assertTrue(g2.is_ground(v2))
+                self.assertFalse(g2.is_ground(v1))
+
+    def test_tensor_grounds(self):
+        """tensor() should preserve grounds from the other graph."""
+        for backend in ["simple", "multigraph"]:
+            with self.subTest(backend=backend):
+                g1 = Graph(backend=backend)
+                g1.add_vertex(VertexType.Z, 0, 0)
+
+                g2 = Graph(backend=backend)
+                g2.add_vertex(VertexType.Z, 0, 0, ground=True)
+
+                g = g1.tensor(g2)
+                self.assertEqual(len(g.grounds()), 1)
+
     def test_adjoint_scalar(self):
         g = Graph()
         scalar = Scalar()
@@ -168,6 +292,51 @@ class TestGraphBasicMethods(unittest.TestCase):
         g.scalar = scalar
         g_adj = g.adjoint()
         self.assertAlmostEqual(g_adj.scalar.to_number(), scalar.to_number().conjugate())
+
+    def test_adjoint_z_box_label(self):
+        from pyzx.utils import get_z_box_label, set_z_box_label
+        g = Graph()
+        v = g.add_vertex(VertexType.Z_BOX)
+        set_z_box_label(g, v, (2+3j))
+        g_adj = g.adjoint()
+        adj_v = list(g_adj.vertices())[0]
+        self.assertEqual(get_z_box_label(g_adj, adj_v), (2-3j))
+
+    def test_adjoint_h_box_label(self):
+        from pyzx.utils import get_h_box_label, set_h_box_label
+        g = Graph()
+        v = g.add_vertex(VertexType.H_BOX)
+        set_h_box_label(g, v, (2+3j))
+        g_adj = g.adjoint()
+        adj_v = list(g_adj.vertices())[0]
+        self.assertEqual(get_h_box_label(g_adj, adj_v), (2-3j))
+
+    def test_adjoint_h_box_phase(self):
+        """Adjoint of a phase-based H-box should negate the phase
+        without converting to a complex label."""
+        from pyzx.utils import hbox_has_complex_label
+        g = Graph()
+        phase = Fraction(1, 2)
+        v = g.add_vertex(VertexType.H_BOX, phase=phase)
+        self.assertFalse(hbox_has_complex_label(g, v))
+        g_adj = g.adjoint()
+        adj_v = list(g_adj.vertices())[0]
+        self.assertEqual(g_adj.phase(adj_v), (-phase) % 2)
+        self.assertFalse(hbox_has_complex_label(g_adj, adj_v))
+
+    def test_set_phase_rejects_complex(self):
+        g = Graph()
+        v = g.add_vertex(VertexType.Z)
+        with self.assertRaises(TypeError):
+            g.set_phase(v, (1+2j))
+
+    def test_add_vertex_rejects_complex_phase(self):
+        from pyzx.symbolic import Poly, Term, Var
+        g = Graph()
+        var = Var('x')
+        phase = Poly([((3+2j), Term([(var, 1)]))])
+        with self.assertRaises(TypeError):
+            g.add_vertex(VertexType.Z, phase=phase)
 
     @unittest.skipUnless(np, "numpy needs to be installed for this to run")
     def test_remove_isolated_vertex_preserves_semantics(self):
@@ -246,3 +415,277 @@ class TestGraphCircuitMethods(unittest.TestCase):
         g2.compose(g)
         self.assertTrue(compare_tensors(g2,identity(2), False))
 
+
+class TestGraphSaveLoad(unittest.TestCase):
+    """Tests for graph save/load functionality."""
+
+    def setUp(self):
+        """Create a simple test graph."""
+        self.graph = Graph()
+        g = self.graph
+        v1 = g.add_vertex(VertexType.BOUNDARY, 0, 0)
+        v2 = g.add_vertex(VertexType.Z, 0, 1, Fraction(1, 4))
+        v3 = g.add_vertex(VertexType.X, 0, 2)
+        v4 = g.add_vertex(VertexType.BOUNDARY, 0, 3)
+        g.add_edge((v1, v2))
+        g.add_edge((v2, v3), EdgeType.HADAMARD)
+        g.add_edge((v3, v4))
+        g.set_inputs((v1,))
+        g.set_outputs((v4,))
+
+    def test_save_load_json(self):
+        """Test saving and loading a graph in JSON format."""
+        with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as f:
+            filename = f.name
+        try:
+            self.graph.save(filename)
+            loaded = Graph.load(filename)
+            self.assertEqual(self.graph.num_vertices(), loaded.num_vertices())
+            self.assertEqual(self.graph.num_edges(), loaded.num_edges())
+        finally:
+            os.unlink(filename)
+
+    def test_save_load_json_explicit_format(self):
+        """Test saving and loading with explicit format specification."""
+        with tempfile.NamedTemporaryFile(suffix='.txt', delete=False) as f:
+            filename = f.name
+        try:
+            self.graph.save(filename, fmt='json')
+            loaded = Graph.load(filename, fmt='json')
+            self.assertEqual(self.graph.num_vertices(), loaded.num_vertices())
+            self.assertEqual(self.graph.num_edges(), loaded.num_edges())
+        finally:
+            os.unlink(filename)
+
+    def test_save_load_tikz(self):
+        """Test saving and loading a graph in TikZ format."""
+        with tempfile.NamedTemporaryFile(suffix='.tikz', delete=False) as f:
+            filename = f.name
+        try:
+            self.graph.save(filename)
+            loaded = Graph.load(filename, warn_overlap=False)
+            self.assertEqual(self.graph.num_vertices(), loaded.num_vertices())
+            self.assertEqual(self.graph.num_edges(), loaded.num_edges())
+        finally:
+            os.unlink(filename)
+
+    def test_save_unknown_format_raises(self):
+        """Test that saving with unknown format raises ValueError."""
+        with tempfile.NamedTemporaryFile(suffix='.xyz', delete=False) as f:
+            filename = f.name
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                self.graph.save(filename)
+            self.assertIn("Cannot infer format", str(ctx.exception))
+        finally:
+            os.unlink(filename)
+
+    def test_save_unsupported_format_raises(self):
+        """Test that saving with unsupported format raises ValueError."""
+        with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as f:
+            filename = f.name
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                self.graph.save(filename, fmt='xml')
+            self.assertIn("Unsupported format", str(ctx.exception))
+        finally:
+            os.unlink(filename)
+
+    def test_load_unknown_format_raises(self):
+        """Test that loading with unknown format raises ValueError."""
+        with tempfile.NamedTemporaryFile(suffix='.xyz', delete=False) as f:
+            f.write(b'test')
+            filename = f.name
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                Graph.load(filename)
+            self.assertIn("Cannot infer format", str(ctx.exception))
+        finally:
+            os.unlink(filename)
+
+    def test_qgraph_extension(self):
+        """Test that .qgraph extension is recognized as JSON."""
+        with tempfile.NamedTemporaryFile(suffix='.qgraph', delete=False) as f:
+            filename = f.name
+        try:
+            self.graph.save(filename)
+            loaded = Graph.load(filename)
+            self.assertEqual(self.graph.num_vertices(), loaded.num_vertices())
+        finally:
+            os.unlink(filename)
+
+
+class TestPhaseGadget(unittest.TestCase):
+
+    def test_add_phase_gadget_basic(self):
+        g = Graph()
+        v1 = g.add_vertex(VertexType.Z, 0, 0)
+        v2 = g.add_vertex(VertexType.Z, 1, 0)
+        v3 = g.add_vertex(VertexType.Z, 2, 0)
+
+        hub, phase_v = g.add_phase_gadget(Fraction(1, 4), [v1, v2, v3])
+
+        self.assertEqual(g.phase(hub), 0)
+        self.assertEqual(g.vertex_degree(hub), 4)
+        self.assertEqual(g.phase(phase_v), Fraction(1, 4))
+        self.assertEqual(g.vertex_degree(phase_v), 1)
+        self.assertTrue(g.is_phase_gadget(hub))
+
+    def test_add_phase_gadget_single_target(self):
+        g = Graph()
+        v1 = g.add_vertex(VertexType.Z, 0, 0)
+
+        hub, phase_v = g.add_phase_gadget(Fraction(1, 2), [v1])
+
+        self.assertEqual(g.phase(hub), 0)
+        self.assertEqual(g.phase(phase_v), Fraction(1, 2))
+        self.assertEqual(g.vertex_degree(hub), 2)
+
+    def test_add_phase_gadget_empty_targets_error(self):
+        g = Graph()
+        with self.assertRaises(ValueError):
+            g.add_phase_gadget(Fraction(1, 4), [])
+
+    def test_add_phase_gadget_custom_vertex_type(self):
+        g = Graph()
+        v1 = g.add_vertex(VertexType.X, 0, 0)
+        v2 = g.add_vertex(VertexType.X, 1, 0)
+
+        hub, phase_v = g.add_phase_gadget(
+            Fraction(3, 4), [v1, v2],
+            vertex_type=VertexType.X
+        )
+
+        self.assertEqual(g.type(hub), VertexType.X)
+        self.assertEqual(g.type(phase_v), VertexType.X)
+
+    def test_add_phase_gadget_custom_edge_type(self):
+        g = Graph()
+        v1 = g.add_vertex(VertexType.Z, 0, 0)
+        v2 = g.add_vertex(VertexType.Z, 1, 0)
+
+        hub, phase_v = g.add_phase_gadget(
+            Fraction(1, 4), [v1, v2],
+            edge_type=EdgeType.SIMPLE
+        )
+
+        e1 = g.edge(hub, v1)
+        e2 = g.edge(hub, v2)
+        self.assertEqual(g.edge_type(e1), EdgeType.SIMPLE)
+        self.assertEqual(g.edge_type(e2), EdgeType.SIMPLE)
+
+        e_phase = g.edge(hub, phase_v)
+        self.assertEqual(g.edge_type(e_phase), EdgeType.HADAMARD)
+
+
+class TestVarRegistryPropagation(unittest.TestCase):
+    """Tests that variable type metadata is preserved through graph transforms."""
+
+    def _make_bool_var_circuit(self):
+        """Create a single-wire circuit with a boolean variable 'b' on a Z spider."""
+        from pyzx.symbolic import new_var
+        g = Graph()
+        phase = new_var('b', is_bool=True, registry=g.var_registry)
+        i = g.add_vertex(VertexType.BOUNDARY, 0, 0)
+        v = g.add_vertex(VertexType.Z, 0, 1, phase=phase)
+        o = g.add_vertex(VertexType.BOUNDARY, 0, 2)
+        g.add_edges([(i, v), (v, o)])
+        g.set_inputs((i,))
+        g.set_outputs((o,))
+        return g, v
+
+    def _make_identity_wire(self):
+        """Create a single-wire identity circuit."""
+        g = Graph()
+        i = g.add_vertex(VertexType.BOUNDARY, 0, 0)
+        o = g.add_vertex(VertexType.BOUNDARY, 0, 1)
+        g.add_edge((i, o))
+        g.set_inputs((i,))
+        g.set_outputs((o,))
+        return g
+
+    def _check_bool_var(self, g):
+        self.assertTrue(g.var_registry.get_type('b', default=False))
+
+    def test_subgraph_from_vertices_preserves_var_registry(self):
+        g, v = self._make_bool_var_circuit()
+        self._check_bool_var(g.subgraph_from_vertices([v]))
+
+    def test_subgraph_from_vertices_excludes_unused_vars(self):
+        """Only variables used by subgraph vertices should be copied."""
+        from pyzx.symbolic import new_var
+        g = Graph()
+        alpha = new_var('alpha', is_bool=False, registry=g.var_registry)
+        beta = new_var('beta', is_bool=True, registry=g.var_registry)
+        v1 = g.add_vertex(VertexType.Z, 0, 0, phase=alpha)
+        v2 = g.add_vertex(VertexType.Z, 0, 1, phase=beta)
+        g.add_edge((v1, v2))
+
+        sub = g.subgraph_from_vertices([v1])
+        self.assertIn('alpha', sub.var_registry.vars())
+        self.assertNotIn('beta', sub.var_registry.vars())
+
+    def test_subgraph_from_vertices_z_box_label_vars(self):
+        """Variables in Z-box labels should be copied to the subgraph."""
+        from pyzx.symbolic import new_var
+        from pyzx.utils import get_z_box_label, set_z_box_label
+        g = Graph()
+        alpha = new_var('alpha', is_bool=False, registry=g.var_registry)
+        beta = new_var('beta', is_bool=True, registry=g.var_registry)
+        v1 = g.add_vertex(VertexType.Z_BOX, 0, 0)
+        set_z_box_label(g, v1, alpha)
+        v2 = g.add_vertex(VertexType.Z, 0, 1, phase=beta)
+        g.add_edge((v1, v2))
+
+        sub = g.subgraph_from_vertices([v1])
+        self.assertIn('alpha', sub.var_registry.vars())
+        self.assertNotIn('beta', sub.var_registry.vars())
+
+    def test_subgraph_from_vertices_does_not_mutate_parent(self):
+        """Creating a subgraph should not rebind the parent graph's Vars."""
+        from pyzx.symbolic import new_var
+        g = Graph()
+        alpha = new_var('alpha', is_bool=False, registry=g.var_registry)
+        v1 = g.add_vertex(VertexType.Z, 0, 0, phase=alpha)
+
+        parent_var = next(iter(g.phase(v1).free_vars()))
+        self.assertIs(parent_var._registry, g.var_registry)
+
+        sub = g.subgraph_from_vertices([v1])
+
+        self.assertIs(parent_var._registry, g.var_registry)
+        sub_var = next(iter(sub.phase(v1).free_vars()))
+        self.assertIs(sub_var._registry, sub.var_registry)
+
+    def test_merge_preserves_var_registry(self):
+        g, _ = self._make_bool_var_circuit()
+        target = Graph()
+        target.merge(g)
+        self._check_bool_var(target)
+        # Verify variables in phases are bound to target's registry.
+        target.var_registry.set_type('b', False)
+        v = [v for v in target.vertices() if target.type(v) == VertexType.Z][0]
+        var = next(iter(target.phase(v).free_vars()))
+        self.assertFalse(var.is_bool)
+
+    def test_tensor_preserves_var_registry(self):
+        g, _ = self._make_bool_var_circuit()
+        self._check_bool_var(self._make_identity_wire().tensor(g))
+
+    def test_compose_preserves_var_registry(self):
+        g, _ = self._make_bool_var_circuit()
+        wire = self._make_identity_wire()
+        wire.compose(g)
+        self._check_bool_var(wire)
+
+    def test_apply_diff_preserves_var_registry(self):
+        from pyzx.graph.diff import GraphDiff
+        g, _ = self._make_bool_var_circuit()
+        empty = Graph()
+        empty.add_vertex(VertexType.Z, 0, 0)
+        result = GraphDiff(empty, g).apply_diff(empty)
+        self._check_bool_var(result)
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -1,7 +1,6 @@
-# PyZX - Python library for quantum circuit rewriting 
+# PyZX - Python library for quantum circuit rewriting
 #        and optimization using the ZX-calculus
 # Copyright (C) 2018 - Aleks Kissinger and John van de Wetering
-
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -14,27 +13,32 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .qasmparser import QASMParser
-from ..rewrite_rules.rules import *
-from ..simplify import simp
 from ..graph.base import BaseGraph
+from ..rewrite import RewriteSimpDoubleVertex, RewriteSimpSingleVertex
+from ..rewrite_rules import (check_fuse, check_remove_id, unsafe_fuse,
+                             unsafe_remove_id)
+from ..utils import VertexType
+from .qasmparser import QASMParser
 
 __all__ = ['sqasm']
+
 
 #TODO: Improve the type annotation of these functions
 
 # versions of these rules which instruct the simplifier *not* to remove
 # isolated vertices. n.b. remove_ids already does this, but this might change
 # in the future...
-def spider_nocheck(g: BaseGraph, ms: List) -> RewriteOutputType:
-    etab,rem_v,rem_e,check = spider(g, ms)
-    return (etab, rem_v, rem_e, False)
 
-def remove_ids_nocheck(g: BaseGraph, ms: List) -> RewriteOutputType:
-    etab,rem_v,rem_e,check = remove_ids(g, ms)
-    return (etab, rem_v, rem_e, False)
+spider_nocheck: RewriteSimpDoubleVertex = RewriteSimpDoubleVertex(check_fuse, unsafe_fuse, None, False, False)
 
-def sqasm(s: str, simplify=True) -> BaseGraph:
+# def spider_nocheck(g: BaseGraph, ms: List) -> RewriteOutputType:
+#     etab,rem_v,rem_e,check = spider(g, ms)
+#     return (etab, rem_v, rem_e, False)
+
+remove_ids_nocheck: RewriteSimpSingleVertex = RewriteSimpSingleVertex(check_remove_id, unsafe_remove_id, None, False)
+
+
+def sqasm(s: str, simplify: bool = True) -> BaseGraph:
     p = QASMParser()
     c = p.parse(s, strict=False)
     g = c.to_graph(zh=True)
@@ -67,9 +71,9 @@ def sqasm(s: str, simplify=True) -> BaseGraph:
     g.set_outputs(tuple(x for x in outputs if not x is None))
     
     while simplify:
-        i = simp(g, '', match_spider_parallel, spider_nocheck, quiet=True)
-        i += simp(g, '', match_ids_parallel, remove_ids_nocheck, quiet=True)
-        if i == 0: break
+        i1 = spider_nocheck(g)
+        i2 = remove_ids_nocheck(g)
+        if not (i1 or i2): break
     
     g.pack_circuit_rows()
     return g

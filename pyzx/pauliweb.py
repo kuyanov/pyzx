@@ -1,4 +1,4 @@
-# PyZX - Python library for quantum circuit rewriting 
+# PyZX - Python library for quantum circuit rewriting
 #        and optimization using the ZX-calculus
 # Copyright (C) 2024 - Aleks Kissinger and John van de Wetering
 
@@ -20,7 +20,7 @@ from .gflow import gflow
 from .utils import EdgeType, VertexType, vertex_is_zx, phase_is_clifford
 from .graph.base import BaseGraph, VT, ET
 
-from typing import Any, Optional, Set, Dict, Tuple, Generic
+from typing import Any, Optional, Dict, Tuple, Generic, Iterable
 import random
 
 def multiply_paulis(p1: str, p2: str) -> str:
@@ -54,9 +54,13 @@ class PauliWeb(Generic[VT, ET]):
     If these conditions are violated, the Pauli web is called "open", and a spider violating (i) or edge violating
     (ii) is called a boundary of the web.
     """
+    
     def __init__(self, g: BaseGraph[VT,ET]):
         self.g = g
         self.es: Dict[Tuple[VT,VT], str] = dict()
+    
+    def __getitem__(self, edge: Tuple[VT, VT]):
+        return self.es.get(edge, 'I')
     
     @staticmethod
     def random(g: BaseGraph[VT,ET], pX=0.1, pY=0.1, pZ=0.1):
@@ -74,7 +78,7 @@ class PauliWeb(Generic[VT, ET]):
                 s,t = (t,s)
         return w
     
-    def copy(self) -> PauliWeb:
+    def copy(self) -> PauliWeb[VT, ET]:
         pw = PauliWeb(self.g)
         pw.es = self.es.copy()
         return pw
@@ -86,29 +90,39 @@ class PauliWeb(Generic[VT, ET]):
             self.es.pop((s,t),'')
         else:
             self.es[(s,t)] = p
-
+    
     def add_edge(self, v_pair: Tuple[VT, VT], pauli: str):
         s, t = v_pair
+        # Reject missing edges up front: on backends like ``GraphS`` that
+        # return a canonical pair regardless of existence, ``edge``/``edge_type``
+        # would otherwise silently label a non-existent edge.
+        if not self.g.connected(s, t):
+            raise ValueError(f"No edge between {s} and {t}")
         et = self.g.edge_type(self.g.edge(s, t))
         self.add_half_edge((s,t), pauli)
         self.add_half_edge((t,s), pauli if et == EdgeType.SIMPLE else h_pauli(pauli))
     
+    def remove_edges(self, v_pairs: Iterable[Tuple[VT, VT]]):
+        for s, t in v_pairs:
+            self.es.pop((s, t), '')
+            self.es.pop((t, s), '')
+    
     def vertices(self):
         return set(v for (v,_) in self.es)
-
+    
     def half_edges(self) -> Dict[Tuple[VT,VT],str]:
         return self.es
     
     def __repr__(self):
         return 'PauliWeb' + str(self.vertices())
     
-    def __mul__(self, other: PauliWeb):
+    def __mul__(self, other: PauliWeb[VT, ET]) -> PauliWeb[VT, ET]:
         pw = self.copy()
         for e,p in other.es.items():
             pw.add_half_edge(e, p)
         return pw
     
-    def commutes_with(self, other: PauliWeb):
+    def commutes_with(self, other: PauliWeb[VT, ET]) -> bool:
         comm = True
         for e,p1 in self.es.items():
             p2 = other.es.get(e, 'I')
@@ -123,18 +137,23 @@ class PauliWeb(Generic[VT, ET]):
             p0 = self.es.get((s,t), 'I')
             p1 = self.es.get((t,s), 'I')
 
+            # Fail clearly if the web references an edge the graph lacks: on
+            # ``GraphS``, ``edge`` returns a canonical pair even when absent, so
+            # ``remove_edge`` would otherwise raise an opaque ``KeyError``.
+            if not g.connected(s, t):
+                raise ValueError(f"No edge between {s} and {t}")
             e = g.edge(s, t)
             et = g.edge_type(e)
             g.remove_edge(e)
-
+            
             spots = 1
             for p in [p0,p1]:
                 if p == 'Y': spots += 2
                 elif p == 'X' or p == 'Z': spots += 1
-
+            
             q, r = (g.qubit(s), g.row(s))
             dq, dr = ((g.qubit(t) - q)/spots, (g.row(t) - r)/spots)
-
+            
             v0 = s
             v1 = t
             if p0 == 'X':
@@ -152,7 +171,7 @@ class PauliWeb(Generic[VT, ET]):
                 q += dq; r += dr
                 v0 = g.add_vertex(VertexType.Z, q, r, phase=1)
                 g.add_edge((s, v0))
-
+            
             if p1 == 'X':
                 q += dq; r += dr
                 v1 = g.add_vertex(VertexType.X, q, r, phase=1)
@@ -203,7 +222,7 @@ def compute_pauli_webs(g: BaseGraph[VT,ET], backwards:bool=True, debug:Optional[
             color_edge[v] = (s,t)
         
     for b in g1.inputs() + g1.outputs():
-        e = g1.incident_edges(b)[0]
+        e = next(iter(g1.incident_edges(b)))
         v = next(iter(g1.neighbors(b)))
         vt = g1.type(v)
         et = g1.edge_type(e)

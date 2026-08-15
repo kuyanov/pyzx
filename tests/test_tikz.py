@@ -1,0 +1,636 @@
+# PyZX - Python library for quantum circuit rewriting
+#        and optimization using the ZX-calculus
+# Copyright (C) 2018 - Aleks Kissinger and John van de Wetering
+
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+
+#    http://www.apache.org/licenses/LICENSE-2.0
+
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import unittest
+import sys
+from fractions import Fraction
+
+if __name__ == '__main__':
+    sys.path.append('..')
+    sys.path.append('.')
+
+from pyzx.utils import EdgeType, VertexType
+from pyzx.tikz import tikz_to_graph, to_tikz
+from pyzx.graph.graph import Graph
+from pyzx.graph.jsonparser import string_to_phase
+from pyzx.tensor import compare_tensors
+
+
+class TestTikzErrorHandling(unittest.TestCase):
+    """Tests for error handling options in tikz_to_graph."""
+
+    def test_invalid_phase_raises_error_by_default(self):
+        """Invalid phase raises error by default."""
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=z spider] (0) at (0, 0) {$bad($};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        with self.assertRaises(ValueError):
+            tikz_to_graph(tikz, warn_overlap=False)
+
+    def test_ignore_invalid_phases_z_spider(self):
+        """Invalid phase uses default (0) for Z spider."""
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=z spider] (0) at (0, 0) {$bad($};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False, ignore_invalid_phases=True)
+        self.assertEqual(g.num_vertices(), 1)
+        v = list(g.vertices())[0]
+        self.assertEqual(g.phase(v), 0)
+
+    def test_ignore_invalid_phases_x_spider(self):
+        """Invalid phase uses default (0) for X spider."""
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=x spider] (0) at (0, 0) {$bad($};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False, ignore_invalid_phases=True)
+        self.assertEqual(g.num_vertices(), 1)
+        v = list(g.vertices())[0]
+        self.assertEqual(g.phase(v), 0)
+
+    def test_ignore_invalid_phases_hadamard(self):
+        """Invalid phase uses default (1) for H-box."""
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=hadamard] (0) at (0, 0) {$bad($};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False, ignore_invalid_phases=True)
+        self.assertEqual(g.num_vertices(), 1)
+        v = list(g.vertices())[0]
+        self.assertEqual(g.phase(v), 1)
+
+    def test_ignore_invalid_phases_fraction_error(self):
+        """Invalid fraction phase uses default."""
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=z spider] (0) at (0, 0) {$\frac{abc}{def}\pi$};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False, ignore_invalid_phases=True)
+        self.assertEqual(g.num_vertices(), 1)
+        v = list(g.vertices())[0]
+        self.assertEqual(g.phase(v), 0)
+
+    def test_ignore_parse_errors_malformed_node(self):
+        """Malformed nodes are skipped with ignore_parse_errors."""
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=z spider] (0) at (0, 0) {};
+\node this is not a valid node definition
+\node [style=z spider] (2) at (2, 0) {};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\draw (0) to (2);
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False, ignore_parse_errors=True)
+        self.assertEqual(g.num_vertices(), 2)
+        self.assertEqual(g.num_edges(), 1)
+
+    def test_ignore_parse_errors_malformed_edge(self):
+        """Malformed edges are skipped with ignore_parse_errors."""
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=z spider] (0) at (0, 0) {};
+\node [style=z spider] (1) at (1, 0) {};
+\node [style=z spider] (2) at (2, 0) {};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\draw (0) to (1);
+\draw this is not a valid edge
+\draw (1) to (2);
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False, ignore_parse_errors=True)
+        self.assertEqual(g.num_vertices(), 3)
+        self.assertEqual(g.num_edges(), 2)
+
+    def test_ignore_parse_errors_edge_to_missing_node(self):
+        """Edges referencing skipped nodes are handled."""
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=z spider] (0) at (0, 0) {};
+\node malformed node (1)
+\node [style=z spider] (2) at (2, 0) {};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\draw (0) to (1);
+\draw (1) to (2);
+\draw (0) to (2);
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False, ignore_parse_errors=True)
+        self.assertEqual(g.num_vertices(), 2)
+        self.assertEqual(g.num_edges(), 1)
+
+    def test_valid_tikz_still_works_with_ignore_options(self):
+        """Valid tikz works correctly with ignore options enabled."""
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=z spider] (0) at (0, 0) {$\frac{\pi}{4}$};
+\node [style=x spider] (1) at (1, 0) {$\frac{3\pi}{2}$};
+\node [style=hadamard] (2) at (2, 0) {};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\draw (0) to (1);
+\draw [style=hadamard edge] (1) to (2);
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False,
+                         ignore_invalid_phases=True, ignore_parse_errors=True)
+        self.assertEqual(g.num_vertices(), 3)
+        self.assertEqual(g.num_edges(), 2)
+
+    def test_latex_symbolic_phase_label_z_spider(self):
+        """LaTeX symbolic labels are normalised for non-phase-dot Z styles."""
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=z spider] (0) at (0, 0) {$\alpha$};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False)
+        v = list(g.vertices())[0]
+        self.assertEqual(str(g.phase(v)), "alpha")
+
+    def test_latex_symbolic_phase_label_green_dot(self):
+        """Style synonyms such as green dot use the same symbolic parser path."""
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=green dot] (0) at (0, 0) {$\alpha$};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False)
+        v = list(g.vertices())[0]
+        self.assertEqual(str(g.phase(v)), "alpha")
+
+    def test_latex_fraction_symbolic_phase_label(self):
+        """LaTeX fractions over symbolic labels are normalised to parser syntax."""
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=z spider] (0) at (0, 0) {$\frac{\alpha}{2}$};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False)
+        v = list(g.vertices())[0]
+        self.assertEqual(str(g.phase(v)), "1/2⋅alpha")
+
+    def test_latex_fraction_numeric_phase_label(self):
+        """Numeric LaTeX fractions parse back to a Fraction, not a constant Poly (issue #471)."""
+        for label, expected in [(r"\frac{\pi}{4}", Fraction(1, 4)),
+                                (r"\frac{3\pi}{4}", Fraction(3, 4)),
+                                (r"\frac{\pi}{2}", Fraction(1, 2)),
+                                (r"\frac{2\pi}{3}", Fraction(2, 3))]:
+            with self.subTest(label=label):
+                tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=green dot] (0) at (0, 0) {$%s$};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\end{pgfonlayer}
+\end{tikzpicture}''' % label
+                g = tikz_to_graph(tikz, warn_overlap=False)
+                v = list(g.vertices())[0]
+                self.assertEqual(g.phase(v), expected)
+                self.assertIsInstance(g.phase(v), Fraction)
+
+    def test_latex_fraction_pi_suffix_phase_label(self):
+        """The normaliser also handles fraction forms with a trailing pi."""
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=z spider] (0) at (0, 0) {$\frac{3}{2}\pi$};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False)
+        v = list(g.vertices())[0]
+        self.assertEqual(g.phase(v), Fraction(3, 2))
+        self.assertIsInstance(g.phase(v), Fraction)
+
+    def test_tikz_round_trip_preserves_numeric_phase_type(self):
+        """A numeric phase survives a to_tikz/tikz_to_graph round trip as a Fraction, not a Poly (issue #471)."""
+        g = Graph()
+        v = g.add_vertex(VertexType.Z, 0, 0)
+        g.set_phase(v, Fraction(1, 4))
+        g2 = tikz_to_graph(to_tikz(g), warn_overlap=False)
+        w = next(u for u in g2.vertices() if g2.type(u) == VertexType.Z)
+        self.assertEqual(g2.phase(w), Fraction(1, 4))
+        self.assertIsInstance(g2.phase(w), Fraction)
+
+    def test_malformed_numeric_fraction_not_silently_accepted(self):
+        """A malformed numerator (empty or trailing operator) is rejected, not read as 1/den (issue #471)."""
+        for label in [r"\frac{}{4}", r"\frac{\pi*}{4}"]:
+            with self.subTest(label=label):
+                tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=z spider] (0) at (0, 0) {$%s$};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\end{pgfonlayer}
+\end{tikzpicture}''' % label
+                with self.assertRaises(ValueError):
+                    tikz_to_graph(tikz, warn_overlap=False)
+                g = tikz_to_graph(tikz, warn_overlap=False, ignore_invalid_phases=True)
+                v = list(g.vertices())[0]
+                self.assertEqual(g.phase(v), 0)
+
+    def test_zero_denominator_fraction_does_not_crash(self):
+        """A zero denominator is rejected cleanly (ValueError or fallback), not an uncaught error (issue #471)."""
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=z spider] (0) at (0, 0) {$\frac{\pi}{0}$};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        with self.assertRaises(ValueError):
+            tikz_to_graph(tikz, warn_overlap=False)
+        g = tikz_to_graph(tikz, warn_overlap=False, ignore_invalid_phases=True)
+        v = list(g.vertices())[0]
+        self.assertEqual(g.phase(v), 0)
+
+    def test_latex_symbolic_hbox_phase_label(self):
+        """H-box labels use the normalised phase parser when not complex."""
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=hadamard] (0) at (0, 0) {$\alpha$};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False)
+        v = list(g.vertices())[0]
+        self.assertEqual(str(g.phase(v)), "alpha")
+
+    def test_latex_symbolic_z_box_label(self):
+        """Z-box labels use the normalised parser path for symbolic labels."""
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=z box] (0) at (0, 0) {$\alpha$};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False)
+        v = list(g.vertices())[0]
+        self.assertEqual(str(g.vdata(v, 'label')), "alpha")
+
+    def test_metadata_round_trip_preserves_symbolic_variable_types(self):
+        """Symbolic phases survive to_tikz and tikz_to_graph with variable types preserved."""
+        g = Graph()
+        g.var_registry.set_type("theta", False)
+        g.var_registry.set_type("b", True)
+        v = g.add_vertex(VertexType.Z, 0, 0)
+        g.set_phase(v, string_to_phase("theta + b + 1/2", g))
+
+        round_tripped = tikz_to_graph(to_tikz(g), warn_overlap=False)
+        v2 = list(round_tripped.vertices())[0]
+
+        self.assertEqual(round_tripped.phase(v2), string_to_phase("theta + b + 1/2", round_tripped))
+        self.assertFalse(round_tripped.var_registry.get_type("theta"))
+        self.assertTrue(round_tripped.var_registry.get_type("b"))
+
+
+class TestTikzIdentityNodeRemoval(unittest.TestCase):
+    """Tests for identity node removal."""
+
+    def test_identity_node_removal_simple(self):
+        """A 'none' style node with 2 neighbors is removed."""
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=boundary] (0) at (0, 0) {};
+\node [style=none] (1) at (1, 0) {};
+\node [style=z spider] (2) at (2, 0) {};
+\node [style=boundary] (3) at (3, 0) {};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\draw (0) to (1);
+\draw (1) to (2);
+\draw (2) to (3);
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False, remove_identity_nodes=True)
+        self.assertEqual(g.num_vertices(), 3)
+        self.assertEqual(g.num_edges(), 2)
+
+    def test_identity_node_removal_multiple(self):
+        """Multiple 'none' style nodes are removed."""
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=boundary] (0) at (0, 0) {};
+\node [style=none] (1) at (1, 0) {};
+\node [style=none] (2) at (2, 0) {};
+\node [style=boundary] (3) at (3, 0) {};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\draw (0) to (1);
+\draw (1) to (2);
+\draw (2) to (3);
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False, remove_identity_nodes=True)
+        self.assertEqual(g.num_vertices(), 2)
+        self.assertEqual(g.num_edges(), 1)
+
+    def test_identity_node_with_hadamard_edge(self):
+        """Identity node removal preserves Hadamard edges correctly."""
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=boundary] (0) at (0, 0) {};
+\node [style=none] (1) at (1, 0) {};
+\node [style=z spider] (2) at (2, 0) {};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\draw (0) to (1);
+\draw [style=hadamard edge] (1) to (2);
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False, remove_identity_nodes=True)
+        self.assertEqual(g.num_vertices(), 2)
+        self.assertEqual(g.num_edges(), 1)
+        vertices = list(g.vertices())
+        e = g.edge(vertices[0], vertices[1])
+        self.assertEqual(g.edge_type(e), EdgeType.HADAMARD)
+
+    def test_identity_node_both_hadamard_edges(self):
+        """Two Hadamard edges compose to a simple edge."""
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=boundary] (0) at (0, 0) {};
+\node [style=none] (1) at (1, 0) {};
+\node [style=boundary] (2) at (2, 0) {};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\draw [style=hadamard edge] (0) to (1);
+\draw [style=hadamard edge] (1) to (2);
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False, remove_identity_nodes=True)
+        self.assertEqual(g.num_vertices(), 2)
+        self.assertEqual(g.num_edges(), 1)
+        vertices = list(g.vertices())
+        e = g.edge(vertices[0], vertices[1])
+        self.assertEqual(g.edge_type(e), EdgeType.SIMPLE)
+
+    def test_none_node_with_one_neighbor_not_removed(self):
+        """A 'none' style node with 1 neighbor is not removed."""
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=boundary] (0) at (0, 0) {};
+\node [style=none] (1) at (1, 0) {};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\draw (0) to (1);
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False, remove_identity_nodes=True)
+        self.assertEqual(g.num_vertices(), 2)
+        self.assertEqual(g.num_edges(), 1)
+
+    def test_none_node_with_three_neighbors_not_removed(self):
+        """A 'none' style node with 3 neighbors is not removed."""
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=boundary] (0) at (0, 0) {};
+\node [style=none] (1) at (1, 0) {};
+\node [style=boundary] (2) at (2, 0) {};
+\node [style=boundary] (3) at (1, 1) {};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\draw (0) to (1);
+\draw (1) to (2);
+\draw (1) to (3);
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False, remove_identity_nodes=True)
+        self.assertEqual(g.num_vertices(), 4)
+        self.assertEqual(g.num_edges(), 3)
+
+    def test_boundary_style_not_removed(self):
+        """A 'boundary' style node with 2 neighbors is not removed."""
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=z spider] (0) at (0, 0) {};
+\node [style=boundary] (1) at (1, 0) {};
+\node [style=z spider] (2) at (2, 0) {};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\draw (0) to (1);
+\draw (1) to (2);
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False, remove_identity_nodes=True)
+        self.assertEqual(g.num_vertices(), 3)
+        self.assertEqual(g.num_edges(), 2)
+
+    def test_none_node_with_zero_neighbors_not_removed(self):
+        """An isolated 'none' style node with 0 neighbors is not removed."""
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=boundary] (0) at (0, 0) {};
+\node [style=none] (1) at (1, 0) {};
+\node [style=boundary] (2) at (2, 0) {};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\draw (0) to (2);
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False, remove_identity_nodes=True)
+        # The isolated 'none' node remains as an orphan boundary vertex.
+        self.assertEqual(g.num_vertices(), 3)
+        self.assertEqual(g.num_edges(), 1)
+
+    def test_none_node_removal_composes_with_existing_edge(self):
+        """Removing a 'none' node composes edges correctly with existing connections."""
+        # SIMPLE through identity + existing SIMPLE = two parallel SIMPLE edges (fuse to one)
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=z spider] (0) at (0, 0) {};
+\node [style=none] (1) at (1, 0) {};
+\node [style=z spider] (2) at (2, 0) {};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\draw (0) to (1);
+\draw (1) to (2);
+\draw (0) to (2);
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False, remove_identity_nodes=True)
+        self.assertEqual(g.num_vertices(), 2)
+        # Two parallel SIMPLE edges fuse to one SIMPLE edge.
+        self.assertEqual(g.num_edges(), 1)
+        vertices = list(g.vertices())
+        e = g.edge(vertices[0], vertices[1])
+        self.assertEqual(g.edge_type(e), EdgeType.SIMPLE)
+
+    def test_none_node_removal_edge_composition_with_existing(self):
+        """Removing a 'none' node correctly composes with existing Hadamard edge."""
+        # H+H through identity = SIMPLE. SIMPLE + existing HADAMARD = SIMPLE.
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=z spider] (0) at (0, 0) {};
+\node [style=none] (1) at (1, 0) {};
+\node [style=z spider] (2) at (2, 0) {};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\draw [style=hadamard edge] (0) to (1);
+\draw [style=hadamard edge] (1) to (2);
+\draw [style=hadamard edge] (0) to (2);
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False, remove_identity_nodes=True)
+        self.assertEqual(g.num_vertices(), 2)
+        self.assertEqual(g.num_edges(), 1)
+        vertices = list(g.vertices())
+        e = g.edge(vertices[0], vertices[1])
+        self.assertEqual(g.edge_type(e), EdgeType.SIMPLE)
+
+    def test_none_node_removal_hadamard_cancellation(self):
+        """Removing a 'none' node applies Hopf law when Hadamard edges cancel."""
+        # SIMPLE+H through identity = HADAMARD. HADAMARD + existing HADAMARD = cancel.
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=z spider] (0) at (0, 0) {};
+\node [style=none] (1) at (1, 0) {};
+\node [style=z spider] (2) at (2, 0) {};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\draw (0) to (1);
+\draw [style=hadamard edge] (1) to (2);
+\draw [style=hadamard edge] (0) to (2);
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False, remove_identity_nodes=True)
+        self.assertEqual(g.num_vertices(), 2)
+        # Composed HADAMARD + existing HADAMARD = edges cancel (Hopf law).
+        self.assertEqual(g.num_edges(), 0)
+
+    def test_none_node_with_w_io_edge(self):
+        """A 'none' node with a W_IO edge preserves the W_IO edge type."""
+        tikz = r'''\begin{tikzpicture}
+\begin{pgfonlayer}{nodelayer}
+\node [style=w input] (0) at (0, 0) {};
+\node [style=none] (1) at (1, 0) {};
+\node [style=w output] (2) at (2, 0) {};
+\end{pgfonlayer}
+\begin{pgfonlayer}{edgelayer}
+\draw [style=w io edge] (0) to (1);
+\draw [style=w io edge] (1) to (2);
+\end{pgfonlayer}
+\end{tikzpicture}'''
+        g = tikz_to_graph(tikz, warn_overlap=False, remove_identity_nodes=True)
+        self.assertEqual(g.num_vertices(), 2)
+        self.assertEqual(g.num_edges(), 1)
+        vertices = list(g.vertices())
+        e = g.edge(vertices[0], vertices[1])
+        self.assertEqual(g.edge_type(e), EdgeType.W_IO)
+
+
+class TestTikzBoundaryHadamardEdges(unittest.TestCase):
+    """Hadamard edges touching a boundary survive a to_tikz round trip (issue #496)."""
+
+    @staticmethod
+    def _wire(edge_types):
+        """A single qubit wire of Z spiders whose edges have the given types."""
+        g = Graph()
+        vs = [g.add_vertex(VertexType.BOUNDARY, 0, 0)]
+        for i in range(len(edge_types) - 1):
+            vs.append(g.add_vertex(VertexType.Z, 0, i + 1))
+        vs.append(g.add_vertex(VertexType.BOUNDARY, 0, len(edge_types)))
+        for (v, w), et in zip(zip(vs, vs[1:]), edge_types):
+            g.add_edge((v, w), et)
+        g.set_inputs((vs[0],))
+        g.set_outputs((vs[-1],))
+        return g
+
+    @staticmethod
+    def _hadamard_edges(g):
+        return sum(1 for e in g.edges() if g.edge_type(e) == EdgeType.HADAMARD)
+
+    def _round_trip(self, g):
+        g2 = tikz_to_graph(to_tikz(g), warn_overlap=False)
+        g2.auto_detect_io()
+        return g2
+
+    def test_boundary_hadamard_edge_uses_the_hadamard_edge_style(self):
+        """A boundary Hadamard is a styled edge, not a node that no \\draw references."""
+        g = self._wire([EdgeType.HADAMARD, EdgeType.SIMPLE])
+        tikz = to_tikz(g)
+        self.assertIn(r"\draw [style=hadamard edge]", tikz)
+        self.assertNotIn(r"\node [style=hadamard]", tikz)
+
+    def test_hadamard_edge_at_input_boundary_round_trips(self):
+        """An H-edge on the input boundary comes back as an H-edge."""
+        g = self._wire([EdgeType.HADAMARD, EdgeType.SIMPLE])
+        g2 = self._round_trip(g)
+        self.assertEqual(self._hadamard_edges(g2), self._hadamard_edges(g))
+        self.assertEqual([v for v in g2.vertices() if g2.type(v) == VertexType.H_BOX], [])
+        self.assertTrue(compare_tensors(g, g2))
+
+    def test_hadamard_edge_at_output_boundary_round_trips(self):
+        """The boundary test is symmetric, so the output side must behave the same."""
+        g = self._wire([EdgeType.SIMPLE, EdgeType.HADAMARD])
+        g2 = self._round_trip(g)
+        self.assertEqual(self._hadamard_edges(g2), self._hadamard_edges(g))
+        self.assertEqual([v for v in g2.vertices() if g2.type(v) == VertexType.H_BOX], [])
+        self.assertTrue(compare_tensors(g, g2))
+
+    def test_hadamard_edges_at_both_boundaries_round_trip(self):
+        """Both boundaries at once, with an interior H-edge that was never affected."""
+        g = self._wire([EdgeType.HADAMARD, EdgeType.HADAMARD, EdgeType.HADAMARD])
+        g2 = self._round_trip(g)
+        self.assertEqual(self._hadamard_edges(g2), 3)
+        self.assertEqual([v for v in g2.vertices() if g2.type(v) == VertexType.H_BOX], [])
+        self.assertTrue(compare_tensors(g, g2))
+
+    def test_boundary_hadamard_preserves_the_scalar(self):
+        """An H-edge must not come back as an H-box, which differs from it by a factor sqrt(2)."""
+        g = self._wire([EdgeType.HADAMARD, EdgeType.SIMPLE])
+        g2 = self._round_trip(g)
+        self.assertTrue(compare_tensors(g, g2, preserve_scalar=True))
+
+    def test_interior_hadamard_edge_still_round_trips(self):
+        """The non-boundary path is unchanged."""
+        g = self._wire([EdgeType.SIMPLE, EdgeType.HADAMARD, EdgeType.SIMPLE])
+        g2 = self._round_trip(g)
+        self.assertEqual(self._hadamard_edges(g2), 1)
+        self.assertTrue(compare_tensors(g, g2))
+
+
+if __name__ == '__main__':
+    unittest.main()

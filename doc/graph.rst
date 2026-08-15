@@ -4,7 +4,7 @@ ZX-diagrams in PyZX and how to modify them
 ==========================================
 
 
-ZX-diagrams are represented in PyZX by instances of the ``BaseGraph`` class, and are stored as simple graphs with some additional data on the vertices and edges. There are 4 different types of vertices: boundaries, Z-spiders, X-spiders and H-boxes. Boundary vertices represent an input or an output to the circuit and carry no further information. Z- and X-spider are the usual bread and butter of ZX-diagrams. H-boxes are used in ZH-diagrams as a generalisation of the Hadamard gate. Non-boundary vertices carry additional information in the form of a `phase`. This is a fraction ``q`` representing a phase ``pi*q``.
+ZX-diagrams are represented in PyZX by instances of the ``BaseGraph`` class. The default backend stores diagrams as simple graphs with some additional data on the vertices and edges, while other backends can choose different internal representations. There are 4 different types of vertices: boundaries, Z-spiders, X-spiders and H-boxes. Boundary vertices represent an input or an output to the circuit and carry no further information. Z- and X-spider are the usual bread and butter of ZX-diagrams. H-boxes are used in ZH-diagrams as a generalisation of the Hadamard gate. Non-boundary vertices carry additional information in the form of a `phase`. This is a fraction ``q`` representing a phase ``pi*q``.
 
 As a simple example, we could have a graph with 3 vertices. The first being a boundary acting as input, the last being a boundary acting as output. If the middle one is a Z-vertex with phase ``a`` that is connected to both the input and output, then this graph represents a Z[``pi*a``]-phase gate.
 
@@ -33,7 +33,45 @@ Similarly, the type of an edge is stored as one of the integers ``EdgeType.SIMPL
 Backends
 --------
 
-ZX-graphs can be represented internally in different ways. The only fully functioning backend right now is :class:`pyzx.graph.graph_s.GraphS`, which is written entirely in Python. A partial implementation using the ``python-igraph`` package is also available as :class:`pyzx.graph.graph_ig.GraphIG`. A new backend can be constructed by subclassing :class:`pyzx.graph.base.BaseGraph`.
+ZX-graphs can be represented internally in different ways. The default backend is :class:`pyzx.graph.graph_s.GraphS`, which is written entirely in Python and stores at most one edge between a pair of vertices. The :class:`pyzx.graph.multigraph.Multigraph` backend is also available when you need to keep parallel edges explicitly. A partial implementation using the ``python-igraph`` package is also available as :class:`pyzx.graph.graph_ig.GraphIG`. A new backend can be constructed by subclassing :class:`pyzx.graph.base.BaseGraph`.
+
+Multigraph backend
+^^^^^^^^^^^^^^^^^^
+
+A simple graph stores only one edge between two vertices. In the default ``GraphS`` backend, adding another edge between vertices that are already connected either simplifies the edge by the ZX rules or raises an error when the parallel edge cannot be reduced. This is useful for ordinary ZX-diagram manipulation, where parallel edges between spiders are normally simplified away.
+
+The ``Multigraph`` backend stores each edge separately. This is useful for diagrams and extensions where parallel edges are meaningful, such as ZH- and ZW-diagrams, or when you are developing rewrite rules that need to inspect parallel edges before reducing them.
+
+You can create a multigraph through the usual graph factory::
+
+	import pyzx as zx
+
+	g = zx.Graph("multigraph")
+
+or by constructing the backend class directly::
+
+	from pyzx.graph.multigraph import Multigraph
+
+	g = Multigraph()
+
+By default, ``Multigraph`` still tries to simplify reducible parallel edges as they are added. To preserve parallel edges exactly, disable auto-simplification before adding them::
+
+	import pyzx as zx
+
+	g = zx.Graph("multigraph")
+	g.set_auto_simplify(False)
+	v = g.add_vertex(zx.VertexType.Z)
+	w = g.add_vertex(zx.VertexType.X)
+	g.add_edge((v, w))
+	g.add_edge((v, w))
+
+	assert g.num_edges() == 2
+
+Use ``g.get_auto_simplify()`` to inspect this setting. Simple graph backends always auto-simplify and ``set_auto_simplify`` is a no-op for them. When a multigraph is saved in the JSON graph format, the backend name and ``auto_simplify`` value are stored and restored when the graph is loaded again.
+
+The main API difference is that multigraph edges include the edge type in the edge object. For example, iterating over ``g.edges()`` yields triples ``(source, target, edge_type)`` and repeated triples can appear when there are parallel edges of the same type. ``g.edge_set()`` therefore returns a ``Counter`` for multigraphs, not a plain set.
+
+Some rewrites are specifically about parallel edges. In particular, :mod:`pyzx.rewrite_rules.hopf_rule` removes parallel edges in pairs according to the Hopf law, and the bialgebra rule supports matches that involve parallel edges. Other rewrite rules will simply not match when parallel edges are found.
 
 Creating and modifying ZX-diagrams
 ----------------------------------
@@ -42,6 +80,33 @@ To create an empty ZX-diagram call ``g=zx.Graph()``.
 You can then add a vertex and set its data by calling for example ``v = g.add_vertex(zx.VertexType.Z, qubit=0, row=1, phase=1)``. To add an edge between vertices ``v`` and ``w`` you call ``g.add_edge(g.edge(v,w),edgetype=zx.EdgeType.SIMPLE)``.
 
 These functions are probably best used in some type of loop or function so that you don't have to set everything by hand. If you wish to create a ZX-diagram in the shape of a circuit it is probably better to use the :class:`~pyzx.circuit.Circuit`, or if you don't care about the exact structure of the circuit, one of the functions in :mod:`~pyzx.generate`.
+
+
+
+
+ZXLive
+----------
+
+`ZXLive <https://github.com/zxcalc/zxlive>`_ (see also the documentation `here <https://zxlive.readthedocs.io/en/latest/gettingstarted.html>`_) is a graphical user interface for constructing ZX-diagrams and doing automated rewriting with them that is built on top of PyZX. The interface is inspired by `Tikzit <https://tikzit.github.io>`_ so if you are familiar with that, it should be easy enough to use.
+
+ZXLive is built using Qt, and this supplies a magic Jupyter command to open the app from the notebook, which allows you to dynamically interact with that. To see how this works, add the following cell to a Jupyter notebook with ZXLive installed::
+
+	%gui qt6
+	from zxlive import app
+	g =  zx.Graph()
+	g.add_vertex(zx.VertexType.Z, 0, 0)
+	g.add_vertex(zx.VertexType.X, 0, 1)
+	g.add_edge((0, 1))
+	zx.draw(g)
+
+	zxl = app.get_embedded_app()
+	zxl.edit_graph(g, 'g1')
+	zxl.edit_graph(g, 'g2') # You can open multiple copies of the same graph into separate tabs
+
+Any changes made in the ZXLive graphs are not immediately updated in PyZX. Instead you must extract a copy from ZXLive using ``zxl.get_copy_of_graph('graphname')``.
+
+
+
 
 The ZX-diagram editor
 ---------------------
@@ -52,7 +117,8 @@ The ZX-diagram editor
 .. warning::
 	The current PyZX version does not include this restriction on the versions of ``ipywidgets`` and ``notebook`` to increase compatibility with other libraries, so if you want to use the editor, you have to manually make sure you have the correct version of these libraries. There is no further development on the editor, so you can consider it deprecated. If you want to have a nice ZX-diagram editor that is compatible with PyZX, consider using ZXLive.
 
-If you are using a Jupyter notebook, probably the best way to build an arbitrarily shaped ZX-diagram in PyZX is to use the built-in graphical editor. If you don't mind using additional libraries: see the information on ZXLive below.
+Before ZXLive, there was an editor built using Jupyter widgets, which runs inside your Jupyter notebook.
+This is no longer developed and so might or might not run on your device.
 If you have a ZX-diagram ``g``, call ``e = zx.editor.edit(g)`` to start a new editor instance. The output of the cell should be the editor, and should look something like this:
 
 .. figure::  _static/editor_example.png
@@ -79,24 +145,3 @@ With a set of vertices selected, you will see some of the buttons beneath the ed
 Sometimes it is useful to see which linear map your ZX-diagram implements. If you create the editor with the command ``e = zx.editor.edit(g,show_matrix=True)``, this will show a Latex-styled matrix beneath the editor with the linear map your ZX-diagram implements. This matrix is automatically updated after every change you make to the graph. Note that this only works if your ZX-diagram does not have too many inputs and outputs (at most 4). It automatically regards boundary vertices 'pointing right' as inputs, and boundary vertices 'pointing left' as outputs. You can change this manually by changing ``g.inputs`` and ``g.outputs``.
 
 If you click 'Save snapshot', a copy of the graph is saved in the list ``e.snapshots``. When you press 'Load in Tikzit', all snapshots are loaded into a Tikz format parseable by `Tikzit <https://tikzit.github.io>`_. In order to use this functionality you have to point ``zx.settings.tikzit_location`` to a valid executable.
-
-ZXLive
-----------
-
-`ZXLive <https://github.com/zxcalc/zxlive>`_ (see also the documentation `here <https://zxlive.readthedocs.io/en/latest/gettingstarted.html>`_) is a graphical user interface for constructing ZX-diagrams and doing automated rewriting with them that is built on top of PyZX. The interface is inspired by `Tikzit <https://tikzit.github.io>`_ so if you are familiar with that, it should be easy enough to use.
-
-ZXLive is built using Qt, and this supplies a magic Jupyter command to open the app from the notebook, which allows you to dynamically interact with that. To see how this works, add the following cell to a Jupyter notebook with ZXLive installed::
-
-	%gui qt6
-	from zxlive import app
-	g =  zx.Graph()
-	g.add_vertex(zx.VertexType.Z, 0, 0)
-	g.add_vertex(zx.VertexType.X, 0, 1)
-	g.add_edge((0, 1))
-	zx.draw(g)
-
-	zxl = app.get_embedded_app()
-	zxl.edit_graph(g, 'g1')
-	zxl.edit_graph(g, 'g2') # You can open multiple copies of the same graph into separate tabs
-
-Any changes made in the ZXLive graphs are not immediately updated in PyZX. Instead you must extract a copy from ZXLive using ``zxl.get_copy_of_graph('graphname')``.

@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "0.9.0"
+__version__ = "0.10.5"
 
 from .graph.graph import Graph
 from .circuit import Circuit, gates, id
@@ -35,13 +35,11 @@ from . import generate
 from . import todd
 from . import linalg
 from . import extract
-from .rewrite_rules import rules
-from .rewrite_rules import hrules
-from .rewrite_rules import basicrules
-from .rewrite_rules import editor_actions
+from .rewrite_rules import *
 from . import optimize
 from . import simplify
 from . import hsimplify
+from . import ft_simplify
 from . import d3
 from . import tikz
 from . import simulate
@@ -49,6 +47,7 @@ from . import editor
 from . import routing
 from . import local_search
 from .routing.parity_maps import CNOT_tracker
+from . import simulation
 
 # some common scalars
 from .graph.base import Scalar

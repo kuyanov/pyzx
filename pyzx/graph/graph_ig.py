@@ -1,4 +1,4 @@
-# PyZX - Python library for quantum circuit rewriting 
+# PyZX - Python library for quantum circuit rewriting
 #        and optimisation using the ZX-calculus
 # Copyright (C) 2018 - Aleks Kissinger and John van de Wetering
 
@@ -14,18 +14,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# mypy: disable-error-code="no-untyped-def"
+
 try:
 	import igraph as ig
 except ImportError:
 	print("python-igraph not available")
 	ig = None
 
+from typing import Optional
+
 from .base import BaseGraph, VertexType, EdgeType
+from ..utils import assert_phase_real, normalize_phase
 
 class GraphIG(BaseGraph):
-	"""Implementation of :class:`~graph.base.BaseGraph` using ``python-igraph`` 
+	"""Implementation of :class:`~graph.base.BaseGraph` using ``python-igraph``
 	as its backend"""
 	backend = 'igraph'
+	graph: "ig.Graph"
 	def __init__(self):
 		raise Warning("Python-igraph is currently not fully supported.")
 		BaseGraph.__init__(self)
@@ -45,7 +51,7 @@ class GraphIG(BaseGraph):
 	def vindex(self):
 		return self.num_vertices()
 
-	def depth(self): 
+	def depth(self):
 		self._maxr = max(self._rindex.values())
 		return self._maxr
 	def qubit_count(self): return self._maxq + 1
@@ -79,7 +85,10 @@ class GraphIG(BaseGraph):
 	def edges(self):
 		return range(len(self.graph.es))
 
-	def edge(self, s, t):
+	def edge(self, s, t, et: Optional[EdgeType] = None):
+		"""Return igraph's edge index for the pair ``(s, t)``. ``et`` is accepted
+		for consistency with :meth:`BaseGraph.edge` but ignored, as this backend
+		has no parallel edges of multiple types."""
 		return self.graph.es[s,t][0].index
 	
 	def edge_st(self, edge):
@@ -135,7 +144,16 @@ class GraphIG(BaseGraph):
 		return [a if a != None else 0 for a in self.graph.vs['_a']]
 
 	def set_phase(self, vertex, phase):
-		self.graph.vs[vertex]['_a'] = phase % 2
+		assert_phase_real(phase)
+		self.graph.vs[vertex]['_a'] = normalize_phase(phase) % 2
+
+	def add_to_phase(self, vertex, phase):
+		# Normalize the incoming phase before adding it so the existing exact
+		# phase is not lost to float arithmetic, matching `GraphS` and
+		# `Multigraph`.
+		assert_phase_real(phase)
+		phase = normalize_phase(phase)
+		self.set_phase(vertex, self.phase(vertex) + phase)
 
 	def qubit(self, vertex):
 		return self.graph.vs[vertex]['_q'] or -1

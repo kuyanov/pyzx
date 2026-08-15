@@ -24,15 +24,18 @@ from typing import Optional
 if __name__ == '__main__':
     sys.path.append('..')
     sys.path.append('.')
+import math
+
 from pyzx.graph import Graph
 from pyzx.graph.multigraph import Multigraph
 from pyzx.generate import cliffords
 from pyzx.circuit import Circuit
+from pyzx.utils import VertexType, set_h_box_label
 
 np: Optional[ModuleType]
 try:
     import numpy as np
-    from pyzx.tensor import tensorfy, compare_tensors, compose_tensors, adjoint, VertexType
+    from pyzx.tensor import tensorfy, compare_tensors, compose_tensors, adjoint, H_to_tensor
 except ImportError:
     np = None
 
@@ -132,6 +135,14 @@ class TestTensor(unittest.TestCase):
         t_adj = adjoint(t)
         circ_adj = tensorfy(circ.adjoint())
         self.assertTrue(compare_tensors(t_adj,circ_adj))
+    
+    def test_multigraph_auto_simplify_parallel_edges(self):
+        g = Multigraph()
+        g.set_auto_simplify(True)
+        i1 = g.add_vertex(1,0,0)
+        i2 = g.add_vertex(2,1,0)
+        g.add_edges([(i1, i2)] * 3)
+        self.assertTrue(compare_tensors(g, np.array([np.sqrt(2)**(-1)]), preserve_scalar=True))
 
     def test_multiedge_scalar(self):
         g = Multigraph()
@@ -174,12 +185,101 @@ class TestTensor(unittest.TestCase):
         g.add_edges([(i2, i2), (i2, i3)], 2)
         self.assertTrue(compare_tensors(g, np.array([[0,0],[1,0]])))
 
+    def test_parallel_mixed_edges_map(self):
+        """An X spider connected to a Z spider by one simple AND one Hadamard
+        edge in parallel implements the X gate up to scalar; tensorfy must not
+        treat the parallel pair as if both edges were the same type."""
+        from pyzx.utils import EdgeType
+        g = Multigraph()
+        g.set_auto_simplify(False)
+        b_in  = g.add_vertex(VertexType.BOUNDARY, qubit=0, row=0)
+        x     = g.add_vertex(VertexType.X,        qubit=0, row=1)
+        b_out = g.add_vertex(VertexType.BOUNDARY, qubit=0, row=2)
+        z     = g.add_vertex(VertexType.Z,        qubit=-1, row=1)
+        g.add_edge((b_in, x),  EdgeType.SIMPLE)
+        g.add_edge((x, b_out), EdgeType.SIMPLE)
+        g.add_edge((x, z),     EdgeType.SIMPLE)
+        g.add_edge((x, z),     EdgeType.HADAMARD)
+        g.set_inputs((b_in,)); g.set_outputs((b_out,))
+        self.assertTrue(compare_tensors(g, np.array([[0,1],[1,0]]),
+                                        preserve_scalar=False))
+
     def test_to_tensor_equivalent(self):
         g = Graph()
         g.add_vertex(VertexType.Z, phase=1)
         g1 = Graph()
         g1.add_vertex(VertexType.X, phase=1)
         self.assertTrue(g.to_tensor() == g1.to_tensor())
+
+    def test_h_to_tensor_with_label(self):
+        """Test H_to_tensor with explicit complex label."""
+        t = H_to_tensor(2, 0, label=3+4j)
+        expected = np.array([[1, 1], [1, 3+4j]])
+        self.assertTrue(np.allclose(t, expected))
+
+    def test_h_to_tensor_standard_hadamard(self):
+        """Test H_to_tensor for standard Hadamard (label=-1 or phase=pi)."""
+        t_label = H_to_tensor(2, 0, label=-1)
+        t_phase = H_to_tensor(2, math.pi)
+        expected = np.array([[1, 1], [1, -1]])
+        self.assertTrue(np.allclose(t_label, expected))
+        self.assertTrue(np.allclose(t_phase, expected))
+
+    def test_tensorfy_hbox_with_complex_label(self):
+        """Test tensorfy with H-box having complex label."""
+        g = Graph()
+        i = g.add_vertex(VertexType.BOUNDARY, 0, 0)
+        h = g.add_vertex(VertexType.H_BOX, 0, 1)
+        o = g.add_vertex(VertexType.BOUNDARY, 0, 2)
+        g.set_inputs((i,))
+        g.set_outputs((o,))
+        g.add_edge((i, h))
+        g.add_edge((h, o))
+        set_h_box_label(g, h, 1j)
+
+        t = tensorfy(g)
+        expected = np.array([[1, 1], [1, 1j]])
+        self.assertTrue(np.allclose(t, expected))
+
+    def test_tensorfy_hbox_with_standard_label(self):
+        """Test tensorfy with H-box having standard label -1."""
+        g = Graph()
+        i = g.add_vertex(VertexType.BOUNDARY, 0, 0)
+        h = g.add_vertex(VertexType.H_BOX, 0, 1)
+        o = g.add_vertex(VertexType.BOUNDARY, 0, 2)
+        g.set_inputs((i,))
+        g.set_outputs((o,))
+        g.add_edge((i, h))
+        g.add_edge((h, o))
+        set_h_box_label(g, h, -1)
+
+        t = tensorfy(g)
+        expected = np.array([[1, 1], [1, -1]])
+        self.assertTrue(np.allclose(t, expected))
+
+    def test_tensorfy_hbox_phase_and_label_equivalence(self):
+        """Test that phase=1 and label=-1 produce same tensor."""
+        g1 = Graph()
+        i1 = g1.add_vertex(VertexType.BOUNDARY, 0, 0)
+        h1 = g1.add_vertex(VertexType.H_BOX, 0, 1)
+        o1 = g1.add_vertex(VertexType.BOUNDARY, 0, 2)
+        g1.set_inputs((i1,))
+        g1.set_outputs((o1,))
+        g1.add_edge((i1, h1))
+        g1.add_edge((h1, o1))
+        g1.set_phase(h1, 1)
+
+        g2 = Graph()
+        i2 = g2.add_vertex(VertexType.BOUNDARY, 0, 0)
+        h2 = g2.add_vertex(VertexType.H_BOX, 0, 1)
+        o2 = g2.add_vertex(VertexType.BOUNDARY, 0, 2)
+        g2.set_inputs((i2,))
+        g2.set_outputs((o2,))
+        g2.add_edge((i2, h2))
+        g2.add_edge((h2, o2))
+        set_h_box_label(g2, h2, -1)
+
+        self.assertTrue(compare_tensors(g1, g2, preserve_scalar=True))
 
 
 if __name__ == '__main__':

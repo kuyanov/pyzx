@@ -17,6 +17,8 @@
 
 import unittest
 import sys
+import warnings
+from fractions import Fraction
 from types import ModuleType
 from typing import Optional
 
@@ -40,6 +42,10 @@ try:
     import quimb.tensor as qtn
 except ImportError:
     qu = None
+except AttributeError as e:
+    # Fail gracefully if quimb and scipy versions are incompatible (issue #210).
+    qu = None
+    warnings.warn(f"quimb is installed but has compatibility issues: {e}")
 
 
 @unittest.skipUnless(np, "numpy needs to be installed for this to run")
@@ -100,8 +106,8 @@ class TestMapping(unittest.TestCase):
         # connected by a simple edge.
         g = Graph()
         x = g.add_vertex(VertexType.BOUNDARY)
-        v = g.add_vertex(VertexType.Z, phase = 1. / 6.)
-        w = g.add_vertex(VertexType.Z, phase = 1. / 3.)
+        v = g.add_vertex(VertexType.Z, phase = Fraction(1, 6))
+        w = g.add_vertex(VertexType.Z, phase = Fraction(1, 3))
         y = g.add_vertex(VertexType.BOUNDARY)
 
         g.add_edge(g.edge(x, v), edgetype = EdgeType.SIMPLE)
@@ -118,14 +124,47 @@ class TestMapping(unittest.TestCase):
 
     def test_scalar(self):
         g = Graph()
-        x = g.add_vertex(VertexType.Z, row = 0, phase = 1 / 2)
-        y = g.add_vertex(VertexType.Z, row = 1, phase = 1 / 4)
+        x = g.add_vertex(VertexType.Z, row = 0, phase = Fraction(1, 2))
+        y = g.add_vertex(VertexType.Z, row = 1, phase = Fraction(1, 4))
         g.add_edge(g.edge(x, y), edgetype = EdgeType.SIMPLE)
 
         full_reduce(g)
         val = to_quimb_tensor(g).contract(output_inds = ())
         expected_val = 1 + np.exp(1j * np.pi * 3 / 4)
         self.assertTrue(abs(val - expected_val) < 1e-9)
+
+    def test_sum_of_phases_scalar(self):
+        # Regression test for issue #373: two non-Clifford Z-spiders connected
+        # by Hadamard edge populate sum_of_phases when removed.
+        g = Graph()
+        v1 = g.add_vertex(VertexType.Z, phase=Fraction(1, 8))
+        v2 = g.add_vertex(VertexType.Z, phase=Fraction(3, 8))
+        g.add_edge(g.edge(v1, v2), edgetype=EdgeType.HADAMARD)
+
+        val_before = tensorfy(g)
+        g.remove_isolated_vertices()
+        self.assertGreater(len(g.scalar.sum_of_phases), 0)
+
+        val_tensorfy = tensorfy(g)
+        val_quimb = to_quimb_tensor(g).contract(output_inds=())
+        self.assertTrue(np.isclose(val_before, val_tensorfy))
+        self.assertTrue(np.isclose(val_tensorfy, val_quimb))
+
+    def test_empty_sum_of_phases(self):
+        # Test that an empty sum_of_phases is treated as factor of 1.
+        g = Graph()
+        self.assertEqual(g.scalar.sum_of_phases, {})
+
+        val_tensorfy = tensorfy(g)
+        val_quimb = to_quimb_tensor(g).contract(output_inds=())
+        self.assertTrue(np.isclose(val_tensorfy, 1.0))
+        self.assertTrue(np.isclose(val_quimb, 1.0))
+
+    def test_zero_scalar(self):
+        g = Graph()
+        g.scalar.is_zero = True
+        val = to_quimb_tensor(g).contract(output_inds=())
+        self.assertEqual(val, 0j)
 
 
 if __name__ == '__main__':
